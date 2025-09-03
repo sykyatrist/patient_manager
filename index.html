@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mindful Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-firestore.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .printable-content { display: none; }
+        @media print {
+            body > * { display: none; }
+            .printable-content {
+                display: block !important;
+                position: absolute;
+                top: 0; left: 0;
+                width: 100%; height: auto;
+                background: white;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 p-4 font-sans antialiased text-gray-900">
+    <div id="root"></div>
+
+    <script>
+        window.onload = function() {
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+            let auth, db, currentUserId;
+            let currentView = 'list';
+            let selectedPatient = null;
+            let doctorInfo = { name: 'Dr. John Doe', credentials: 'M.D.', contact: '555-555-5555' };
+            let patients = [];
+
+            // --- UI Rendering Functions ---
+            function renderApp() {
+                const root = document.getElementById('root');
+                root.innerHTML = `
+                    <header class="flex flex-col sm:flex-row justify-between items-center py-6 px-4 sm:px-8 bg-white shadow-md rounded-xl mb-6">
+                        <div class="flex items-center space-x-4 mb-4 sm:mb-0">
+                            <h1 class="text-3xl font-bold tracking-tight text-gray-800">Mindful Manager</h1>
+                            <p class="hidden md:block text-sm text-gray-500">Psychiatry Patient Management</p>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <button id="patientsListBtn" class="flex items-center px-4 py-2 bg-gray-200 text-gray-700 hover:bg-gray-300 rounded-lg shadow-sm font-medium">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> <span class="ml-2">All Patients</span>
+                            </button>
+                            <button id="addPatientBtn" class="flex items-center px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-sm font-medium">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg> <span class="ml-2">New Patient</span>
+                            </button>
+                        </div>
+                    </header>
+                    <main class="container mx-auto max-w-5xl">
+                        <p class="text-sm text-gray-500 mb-4">User ID: <span class="font-mono text-xs bg-gray-200 rounded-md px-2 py-1 select-all">${currentUserId}</span></p>
+                        <div id="content"></div>
+                    </main>
+                `;
+                
+                document.getElementById('patientsListBtn').onclick = () => {
+                    currentView = 'list';
+                    selectedPatient = null;
+                    renderContent();
+                };
+                document.getElementById('addPatientBtn').onclick = () => {
+                    currentView = 'add';
+                    renderContent();
+                };
+
+                renderContent();
+            }
+
+            function renderContent() {
+                const contentDiv = document.getElementById('content');
+                if (!contentDiv) return;
+
+                if (!currentUserId) {
+                    contentDiv.innerHTML = `<div class="flex items-center justify-center min-h-[300px] text-xl font-semibold text-red-500">Authentication failed. Please try again.</div>`;
+                    return;
+                }
+
+                switch (currentView) {
+                    case 'list':
+                        renderPatientList();
+                        break;
+                    case 'add':
+                        renderPatientForm();
+                        break;
+                    case 'details':
+                        renderPatientDetails();
+                        break;
+                    case 'edit':
+                        renderPatientForm(selectedPatient);
+                        break;
+                    case 'prescriptions':
+                        renderPrescriptionForm(selectedPatient);
+                        break;
+                    case 'settings':
+                        renderSettingsForm();
+                        break;
+                    default:
+                        contentDiv.innerHTML = '<div>Page not found.</div>';
+                }
+            }
+
+            function renderPatientList() {
+                const contentDiv = document.getElementById('content');
+                const patientHtml = patients.length === 0 ? 
+                    `<p class="text-center text-gray-500">No patients found. Add a new one to get started.</p>` :
+                    patients.map(p => `
+                        <div class="rounded-lg border bg-white shadow-sm transition-shadow duration-300 hover:shadow-lg">
+                            <div class="flex items-start justify-between p-4 pb-2">
+                                <div>
+                                    <h3 class="text-lg font-semibold">${p.name}</h3>
+                                    <p class="text-xs text-gray-500">DOB: ${p.dob}</p>
+                                </div>
+                                <div class="flex space-x-1">
+                                    <button class="edit-patient-btn h-auto rounded-lg bg-transparent p-2 text-gray-500 hover:bg-gray-100 hover:text-blue-600" data-id="${p.id}">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+                                    </button>
+                                    <button class="delete-patient-btn h-auto rounded-lg bg-transparent p-2 text-gray-500 hover:bg-gray-100 hover:text-red-600" data-id="${p.id}">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="px-6 py-2">
+                                <p class="text-sm">${p.diagnosis}</p>
+                            </div>
+                            <div class="p-6 pt-2">
+                                <button class="view-details-btn w-full rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600" data-id="${p.id}">
+                                    View Details
+                                </button>
+                            </div>
+                        </div>
+                    `).join('');
+
+                contentDiv.innerHTML = `
+                    <div class="rounded-xl bg-white shadow-lg">
+                        <div class="p-6">
+                            <h2 class="text-2xl font-semibold">Patient Roster</h2>
+                            <p class="mt-1 text-sm text-gray-500">A complete list of your patients.</p>
+                        </div>
+                        <div class="p-6 pt-0">
+                            <div class="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+                                ${patientHtml}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.querySelectorAll('.view-details-btn').forEach(btn => {
+                    btn.onclick = (e) => {
+                        const id = e.target.dataset.id;
+                        selectedPatient = patients.find(p => p.id === id);
+                        currentView = 'details';
+                        renderContent();
+                    };
+                });
+                document.querySelectorAll('.edit-patient-btn').forEach(btn => {
+                    btn.onclick = (e) => {
+                        const id = e.target.dataset.id;
+                        selectedPatient = patients.find(p => p.id === id);
+                        currentView = 'edit';
+                        renderContent();
+                    };
+                });
+                document.querySelectorAll('.delete-patient-btn').forEach(btn => {
+                    btn.onclick = async (e) => {
+                        const id = e.target.dataset.id;
+                        if (confirm('Are you sure you want to delete this patient?')) {
+                            await handleDeletePatient(id);
+                        }
+                    };
+                });
+            }
+
+            function renderPatientForm(patient = null) {
+                const contentDiv = document.getElementById('content');
+                const isEdit = patient !== null;
+                const formData = patient || { name: '', dob: '', diagnosis: '' };
+
+                contentDiv.innerHTML = `
+                    <div class="rounded-xl bg-white shadow-lg">
+                        <div class="p-6">
+                            <h2 class="text-2xl font-semibold">${isEdit ? 'Edit Patient' : 'Add New Patient'}</h2>
+                            <p class="mt-1 text-sm text-gray-500">
+                                ${isEdit ? 'Update patient details.' : 'Fill out the form to add a new patient to your records.'}
+                            </p>
+                        </div>
+                        <form id="patientForm">
+                            <div class="space-y-4 p-6 pt-0">
+                                <div>
+                                    <label for="name" class="mb-1 block text-sm font-medium text-gray-700">Name</label>
+                                    <input id="name" type="text" value="${formData.name}" required class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                </div>
+                                <div>
+                                    <label for="dob" class="mb-1 block text-sm font-medium text-gray-700">Date of Birth</label>
+                                    <input id="dob" type="date" value="${formData.dob}" required class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                </div>
+                                <div>
+                                    <label for="diagnosis" class="mb-1 block text-sm font-medium text-gray-700">Diagnosis</label>
+                                    <textarea id="diagnosis" rows="3" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">${formData.diagnosis}</textarea>
+                                </div>
+                            </div>
+                            <div class="flex justify-end space-x-2 p-6">
+                                <button type="button" id="cancelBtn" class="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Cancel</button>
+                                <button type="submit" class="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">${isEdit ? 'Update Patient' : 'Add Patient'}</button>
+                            </div>
+                        </form>
+                    </div>
+                `;
+
+                document.getElementById('patientForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newFormData = {
+                        name: document.getElementById('name').value,
+                        dob: document.getElementById('dob').value,
+                        diagnosis: document.getElementById('diagnosis').value,
+                    };
+                    if (isEdit) {
+                        await handleUpdatePatient(patient.id, newFormData);
+                    } else {
+                        await handleAddPatient(newFormData);
+                    }
+                };
+                document.getElementById('cancelBtn').onclick = () => {
+                    currentView = 'list';
+                    renderContent();
+                };
+            }
+
+            function renderPatientDetails() {
+                const contentDiv = document.getElementById('content');
+                let tabsHtml = `
+                    <div class="mt-4 flex space-x-2 border-b border-gray-200">
+                        <button class="tab-btn px-4 py-2 text-sm font-medium border-b-2 ${currentView === 'notes' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}" data-tab="notes">Session Notes</button>
+                        <button class="tab-btn px-4 py-2 text-sm font-medium border-b-2 ${currentView === 'medications' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}" data-tab="medications">Medications</button>
+                        <button class="tab-btn px-4 py-2 text-sm font-medium border-b-2 ${currentView === 'billing' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}" data-tab="billing">Billing</button>
+                        <button class="tab-btn px-4 py-2 text-sm font-medium border-b-2 ${currentView === 'appointments' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}" data-tab="appointments">Appointments</button>
+                        <button class="tab-btn px-4 py-2 text-sm font-medium border-b-2 ${currentView === 'summary' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}" data-tab="summary">Case Summary</button>
+                        <button class="tab-btn px-4 py-2 text-sm font-medium border-b-2 ${currentView === 'settings' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}" data-tab="settings">Settings</button>
+                        <button id="generateReferralBtn" class="flex items-center rounded-lg px-4 py-2 text-sm font-medium transition-colors bg-purple-600 text-white hover:bg-purple-700">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/><path d="M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg> <span class="ml-2">Generate Referral</span>
+                        </button>
+                    </div>
+                `;
+
+                contentDiv.innerHTML = `
+                    <div class="rounded-xl bg-white shadow-lg">
+                        <div class="p-6">
+                            <h2 class="flex items-center text-2xl font-semibold">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                ${selectedPatient.name}
+                            </h2>
+                            <p class="mt-1 text-sm text-gray-500">
+                                Patient Profile and Administrative Records
+                            </p>
+                            ${tabsHtml}
+                        </div>
+                        <div id="tabContent" class="p-6 pt-0"></div>
+                        <div class="p-6">
+                            <button id="backToListBtn" class="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Back to List</button>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('backToListBtn').onclick = () => {
+                    currentView = 'list';
+                    selectedPatient = null;
+                    renderContent();
+                };
+
+                document.querySelectorAll('.tab-btn').forEach(btn => {
+                    btn.onclick = (e) => {
+                        currentView = e.target.dataset.tab;
+                        renderContent();
+                    };
+                });
+                document.getElementById('generateReferralBtn').onclick = generateReferralLetter;
+                renderTabContent(document.getElementById('tabContent'));
+            }
+
+            async function renderTabContent(container) {
+                switch (currentView) {
+                    case 'notes':
+                        renderSessionNotes(container);
+                        break;
+                    case 'medications':
+                        renderMedications(container);
+                        break;
+                    case 'billing':
+                        renderBilling(container);
+                        break;
+                    case 'appointments':
+                        renderAppointments(container);
+                        break;
+                    case 'summary':
+                        renderCaseSummary(container);
+                        break;
+                    case 'settings':
+                        renderSettingsForm(container);
+                        break;
+                }
+            }
+            
+            async function renderSessionNotes(container) {
+                let notes = [];
+                try {
+                    const notesRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/sessions`);
+                    const snapshot = await notesRef.orderBy('timestamp', 'desc').get();
+                    notes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching session notes:", e);
+                }
+
+                const notesHtml = notes.length === 0 ? 
+                    `<p class="text-gray-500">No session notes found. Add your first note below.</p>` :
+                    notes.map(note => `
+                        <div class="relative rounded-lg border border-gray-200 bg-gray-50 p-4">
+                            <div class="mb-2 flex items-center justify-between">
+                                <p class="flex items-center text-sm font-medium text-gray-600">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>
+                                    <span class="ml-1">${note.date}</span>
+                                </p>
+                                <button class="delete-note-btn h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600" data-id="${note.id}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                </button>
+                            </div>
+                            <p class="whitespace-pre-wrap text-gray-800">${note.note}</p>
+                        </div>
+                    `).join('');
+
+                container.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="rounded-lg bg-gray-100 p-4">
+                            <h3 class="mb-2 text-lg font-bold">Patient Information</h3>
+                            <p><strong>Date of Birth:</strong> ${selectedPatient.dob}</p>
+                            <p><strong>Diagnosis:</strong> ${selectedPatient.diagnosis}</p>
+                             <button id="generateTreatmentPlanBtn" class="flex items-center rounded-lg mt-4 px-4 py-2 font-medium transition-colors bg-purple-600 text-white hover:bg-purple-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/><path d="M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg> <span class="ml-2">Generate Treatment Plan</span>
+                            </button>
+                        </div>
+                        <div>
+                            <h3 class="mb-4 text-lg font-bold">Session Notes</h3>
+                            <form id="noteForm" class="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
+                                <h4 class="mb-2 text-md font-semibold">Add New Note</h4>
+                                <textarea id="noteTextarea" rows="4" placeholder="Enter your session notes here..." class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"></textarea>
+                                <div class="mt-3 flex justify-end">
+                                    <button type="submit" class="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s2.5 5 10 5 10-5 10-5"/><path d="M12 17v-7s-1-2-3-2c-2 0-3 2-3 2"/><path d="M12 17v-7s1-2 3-2c2 0 3 2 3 2"/><circle cx="12" cy="7" r="2"/></svg> <span class="ml-2">Save Note</span>
+                                    </button>
+                                </div>
+                            </form>
+                            <div class="pr-2 mt-4 max-h-96 space-y-4 overflow-y-auto">
+                                ${notesHtml}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('noteForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const noteText = document.getElementById('noteTextarea').value;
+                    if (noteText) {
+                        await handleAddNote(noteText);
+                    }
+                };
+                document.getElementById('generateTreatmentPlanBtn').onclick = generateTreatmentPlan;
+                document.querySelectorAll('.delete-note-btn').forEach(btn => {
+                    btn.onclick = async (e) => {
+                        const id = e.target.dataset.id;
+                        if (confirm('Are you sure you want to delete this note?')) {
+                            await handleDeleteNote(id);
+                        }
+                    };
+                });
+            }
+
+            async function renderMedications(container) {
+                let medications = [];
+                try {
+                    const medsRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/medications`);
+                    const snapshot = await medsRef.get();
+                    medications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching medications:", e);
+                }
+
+                const medsHtml = medications.length === 0 ? 
+                    `<p class="text-gray-500">No medications listed.</p>` :
+                    medications.map(med => `
+                        <div class="relative flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-4">
+                            <div>
+                                <h4 class="text-md font-semibold flex items-center"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 20.25a1 1 0 0 0-1.75-.85L5.75 16.75A1 1 0 0 0 5 16V8.25a1 1 0 0 1 .5-.86L10 5.25a1 1 0 0 1 1.5-.86L15 6.75a1 1 0 0 1 .5.86V14a1 1 0 0 0-.75.85l-2.5 2.5a1 1 0 0 0-.75.85V20.25z"/></svg><span class="ml-1">${med.name}</span></h4>
+                                <p class="text-sm text-gray-600"><strong>Dosage:</strong> ${med.dosage}</p>
+                                <p class="text-sm text-gray-600"><strong>Frequency:</strong> ${med.frequency}</p>
+                            </div>
+                            <button class="delete-med-btn h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600" data-id="${med.id}">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                            </button>
+                        </div>
+                    `).join('');
+
+                container.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
+                            <h4 class="mb-2 text-md font-semibold">Add New Medication</h4>
+                            <form id="medForm" class="flex flex-col space-y-3 md:flex-row md:space-x-3 md:space-y-0">
+                                <input type="text" id="medName" placeholder="Medication Name" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <input type="text" id="medDosage" placeholder="Dosage" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <input type="text" id="medFrequency" placeholder="Frequency" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <button type="submit" class="flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg> <span class="ml-2">Add</span>
+                                </button>
+                            </form>
+                        </div>
+                        <div>
+                            <div class="flex justify-between items-center mb-4">
+                                <h3 class="text-lg font-bold">Current Medications</h3>
+                                <button id="generatePrescriptionBtn" class="flex items-center rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg> <span class="ml-2">Generate Prescription</span>
+                                </button>
+                            </div>
+                            <div class="space-y-4">
+                                ${medsHtml}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('medForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newMedication = {
+                        name: document.getElementById('medName').value,
+                        dosage: document.getElementById('medDosage').value,
+                        frequency: document.getElementById('medFrequency').value,
+                    };
+                    await handleAddMedication(newMedication);
+                };
+                document.getElementById('generatePrescriptionBtn').onclick = () => {
+                    currentView = 'prescriptions';
+                    renderContent();
+                };
+                document.querySelectorAll('.delete-med-btn').forEach(btn => {
+                    btn.onclick = async (e) => {
+                        const id = e.target.dataset.id;
+                        if (confirm('Are you sure you want to delete this medication?')) {
+                            await handleDeleteMedication(id);
+                        }
+                    };
+                });
+            }
+
+            function renderPrescriptionForm() {
+                const contentDiv = document.getElementById('content');
+                const today = new Date().toISOString().slice(0, 10);
+                contentDiv.innerHTML = `
+                    <div class="rounded-xl bg-white shadow-lg p-6">
+                        <h2 class="text-2xl font-semibold mb-4">Prescription Generator</h2>
+                        <div class="flex flex-col md:flex-row md:space-x-8">
+                            <div class="flex-1 space-y-4">
+                                <div>
+                                    <label for="date" class="block text-sm font-medium text-gray-700">Date</label>
+                                    <input id="date" type="date" value="${today}" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
+                                </div>
+                                <div>
+                                    <label for="medication" class="block text-sm font-medium text-gray-700">Medication Name</label>
+                                    <input id="medication" type="text" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
+                                </div>
+                                <div>
+                                    <label for="dosage" class="block text-sm font-medium text-gray-700">Dosage</label>
+                                    <input id="dosage" type="text" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
+                                </div>
+                                <div>
+                                    <label for="frequency" class="block text-sm font-medium text-gray-700">Frequency</label>
+                                    <input id="frequency" type="text" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
+                                </div>
+                                <div>
+                                    <label for="instructions" class="block text-sm font-medium text-gray-700">Instructions</label>
+                                    <textarea id="instructions" rows="3" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" ></textarea>
+                                </div>
+                                <div>
+                                    <label for="refills" class="block text-sm font-medium text-gray-700">Refills</label>
+                                    <input id="refills" type="number" value="0" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
+                                </div>
+                            </div>
+                            <div class="flex-1 mt-6 md:mt-0 p-6 bg-gray-100 border border-gray-300 rounded-lg">
+                                <h3 class="text-lg font-bold mb-4">Prescription Preview</h3>
+                                <div id="prescriptionPreview" class="printable-content p-4">
+                                    <h1 class="text-center font-bold text-xl mb-4">Patient Prescription</h1>
+                                    <p class="text-sm mb-2"><strong>Patient Name:</strong> ${selectedPatient.name}</p>
+                                    <p class="text-sm mb-2"><strong>Date of Birth:</strong> ${selectedPatient.dob}</p>
+                                    <p class="text-sm mb-2"><strong>Date:</strong> <span id="preview-date"></span></p>
+                                    <hr class="my-4 border-gray-300"/>
+                                    <p class="text-md font-semibold">Rx:</p>
+                                    <p class="text-md ml-4"><strong>Medication:</strong> <span id="preview-medication"></span></p>
+                                    <p class="text-md ml-4"><strong>Dosage:</strong> <span id="preview-dosage"></span></p>
+                                    <p class="text-md ml-4"><strong>Frequency:</strong> <span id="preview-frequency"></span></p>
+                                    <p class="text-md ml-4"><strong>Instructions:</strong> <span id="preview-instructions"></span></p>
+                                    <p class="text-md mt-4"><strong>Refills:</strong> <span id="preview-refills"></span></p>
+                                    <div class="mt-12">
+                                        <p>_________________________</p>
+                                        <p class="text-sm">${doctorInfo.name}</p>
+                                        <p class="text-sm">${doctorInfo.credentials}</p>
+                                        <p class="text-sm">${doctorInfo.contact}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex justify-end space-x-2 mt-6">
+                            <button id="backToDetailsBtn" class="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Back</button>
+                            <button id="printPrescriptionBtn" class="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 10v4"/><path d="M12 14v4"/></svg> <span class="ml-2">Generate & Print</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+
+                const updatePreview = () => {
+                    document.getElementById('preview-date').textContent = document.getElementById('date').value;
+                    document.getElementById('preview-medication').textContent = document.getElementById('medication').value;
+                    document.getElementById('preview-dosage').textContent = document.getElementById('dosage').value;
+                    document.getElementById('preview-frequency').textContent = document.getElementById('frequency').value;
+                    document.getElementById('preview-instructions').textContent = document.getElementById('instructions').value;
+                    document.getElementById('preview-refills').textContent = document.getElementById('refills').value;
+                };
+
+                document.getElementById('date').oninput = updatePreview;
+                document.getElementById('medication').oninput = updatePreview;
+                document.getElementById('dosage').oninput = updatePreview;
+                document.getElementById('frequency').oninput = updatePreview;
+                document.getElementById('instructions').oninput = updatePreview;
+                document.getElementById('refills').oninput = updatePreview;
+                updatePreview();
+
+                document.getElementById('backToDetailsBtn').onclick = () => {
+                    currentView = 'details';
+                    renderContent();
+                };
+                document.getElementById('printPrescriptionBtn').onclick = () => window.print();
+            }
+
+            async function renderBilling(container) {
+                let billingRecords = [];
+                try {
+                    const billingRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/billing`);
+                    const snapshot = await billingRef.get();
+                    billingRecords = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching billing records:", e);
+                }
+
+                const recordsHtml = billingRecords.length === 0 ? `
+                    <p class="text-gray-500">No billing records found.</p>
+                ` : `
+                    <div class="overflow-x-auto rounded-lg border border-gray-200">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Service</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                                    <th class="relative px-6 py-3"><span class="sr-only">Delete</span></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200 bg-white">
+                                ${billingRecords.map(record => `
+                                    <tr data-id="${record.id}">
+                                        <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-900">${record.date}</td>
+                                        <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-900">${record.service}</td>
+                                        <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-900">$${parseFloat(record.amount).toFixed(2)}</td>
+                                        <td class="whitespace-nowrap px-6 py-4 text-sm">
+                                            <span class="rounded-full px-2 py-1 text-xs font-semibold uppercase ${record.status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${record.status}</span>
+                                        </td>
+                                        <td class="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                                            <button class="delete-record-btn text-red-600 hover:text-red-900">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+
+                container.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
+                            <h4 class="mb-2 text-md font-semibold">Add New Billing Record</h4>
+                            <form id="billingForm" class="space-y-3">
+                                <input type="date" id="billingDate" value="${new Date().toISOString().slice(0, 10)}" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <input type="text" id="billingService" placeholder="Service Description" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <input type="number" id="billingAmount" placeholder="Amount ($)" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <select id="billingStatus" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">
+                                    <option value="unpaid">Unpaid</option>
+                                    <option value="paid">Paid</option>
+                                </select>
+                                <div class="flex justify-end">
+                                    <button type="submit" class="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">Add Record</button>
+                                </div>
+                            </form>
+                        </div>
+                        <div>
+                            <h3 class="mb-2 text-lg font-bold">Billing History</h3>
+                            ${recordsHtml}
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('billingForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newRecord = {
+                        date: document.getElementById('billingDate').value,
+                        service: document.getElementById('billingService').value,
+                        amount: document.getElementById('billingAmount').value,
+                        status: document.getElementById('billingStatus').value,
+                    };
+                    await handleAddBillingRecord(newRecord);
+                };
+                document.querySelectorAll('.delete-record-btn').forEach(btn => {
+                    btn.onclick = async (e) => {
+                        const row = e.target.closest('tr');
+                        const id = row.dataset.id;
+                        if (confirm('Are you sure you want to delete this billing record?')) {
+                            await handleDeleteBillingRecord(id);
+                        }
+                    };
+                });
+            }
+
+            async function renderAppointments(container) {
+                let appointments = [];
+                try {
+                    const apptsRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/appointments`);
+                    const snapshot = await apptsRef.orderBy('date').orderBy('time').get();
+                    appointments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching appointments:", e);
+                }
+
+                const apptsHtml = appointments.length === 0 ? `
+                    <p class="text-gray-500">No appointments scheduled.</p>
+                ` : `
+                    <div class="space-y-4">
+                        ${appointments.map(appt => `
+                            <div class="relative flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-4">
+                                <div>
+                                    <p class="text-sm text-gray-600"><strong>Date:</strong> ${appt.date}</p>
+                                    <p class="text-sm text-gray-600"><strong>Time:</strong> ${appt.time}</p>
+                                    <p class="text-sm font-semibold">${appt.title}</p>
+                                </div>
+                                <button class="delete-appt-btn h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600" data-id="${appt.id}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+
+                container.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
+                            <h4 class="mb-2 text-md font-semibold">Schedule New Appointment</h4>
+                            <form id="apptForm" class="space-y-3">
+                                <input type="date" id="apptDate" value="${new Date().toISOString().slice(0, 10)}" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <input type="time" id="apptTime" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <input type="text" id="apptTitle" placeholder="Title/Notes" required class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                                <div class="flex justify-end">
+                                    <button type="submit" class="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">Schedule</button>
+                                </div>
+                            </form>
+                        </div>
+                        <div>
+                            <h3 class="mb-2 text-lg font-bold">Upcoming Appointments</h3>
+                            ${apptsHtml}
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('apptForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newAppt = {
+                        date: document.getElementById('apptDate').value,
+                        time: document.getElementById('apptTime').value,
+                        title: document.getElementById('apptTitle').value,
+                    };
+                    await handleAddAppointment(newAppt);
+                };
+                document.querySelectorAll('.delete-appt-btn').forEach(btn => {
+                    btn.onclick = async (e) => {
+                        const id = e.target.dataset.id;
+                        if (confirm('Are you sure you want to delete this appointment?')) {
+                            await handleDeleteAppointment(id);
+                        }
+                    };
+                });
+            }
+
+            async function renderCaseSummary(container) {
+                let documents = [];
+                try {
+                    const docsRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/documents`);
+                    const snapshot = await docsRef.get();
+                    documents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching documents:", e);
+                }
+
+                const docsHtml = documents.length === 0 ? `
+                    <p class="text-gray-500">No documents added yet.</p>
+                ` : `
+                    <div class="pr-2 max-h-96 space-y-4 overflow-y-auto">
+                        ${documents.map(doc => `
+                            <div class="relative rounded-lg border border-gray-200 bg-gray-50 p-4">
+                                <div class="mb-2 flex items-center justify-between">
+                                    <p class="flex items-center text-sm font-medium text-gray-600">
+                                        <span class="font-semibold text-blue-700 mr-1">${doc.type}</span> from ${doc.date}
+                                    </p>
+                                    <button class="delete-doc-btn h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600" data-id="${doc.id}">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                    </button>
+                                </div>
+                                <p class="whitespace-pre-wrap text-gray-800">${doc.content}</p>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+
+                container.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
+                            <h4 class="mb-2 text-md font-semibold">Generate Case Summary</h4>
+                            <div id="summaryOutput" class="rounded-lg bg-gray-100 p-4 border border-gray-300">
+                                <p class="whitespace-pre-wrap text-sm text-gray-800">Click 'Generate Summary' to create a case summary from the documents below.</p>
+                            </div>
+                            <div class="flex justify-end mt-4">
+                                <button id="generateSummaryBtn" class="flex items-center rounded-lg px-4 py-2 font-medium transition-colors bg-blue-600 text-white hover:bg-blue-700">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9c-3.34 0-6.19 1.63-8 4"/><path d="M3 12a9 9 0 0 0 9 9c3.34 0 6.19-1.63 8-4"/><path d="M17 12H7"/><path d="M13 8l4 4-4 4"/></svg> <span class="ml-2">Generate Summary</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
+                            <h4 class="mb-2 text-md font-semibold">Add New Document</h4>
+                            <textarea id="newDocumentText" rows="4" placeholder="Paste or type a new document (e.g., letter, email, lab result) here..." class="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"></textarea>
+                            <div class="flex justify-end mt-3">
+                                <button id="addDocumentBtn" class="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg> <span class="ml-2">Add Document</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <h3 class="mb-2 text-lg font-bold">Patient Documents</h3>
+                            ${docsHtml}
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('addDocumentBtn').onclick = handleAddDocument;
+                document.getElementById('generateSummaryBtn').onclick = generateCaseSummary;
+                document.querySelectorAll('.delete-doc-btn').forEach(btn => {
+                    btn.onclick = async (e) => {
+                        const id = e.target.dataset.id;
+                        if (confirm('Are you sure you want to delete this document?')) {
+                            await handleDeleteDocument(id);
+                        }
+                    };
+                });
+            }
+
+            function renderSettingsForm() {
+                const contentDiv = document.getElementById('content');
+                contentDiv.innerHTML = `
+                    <div class="rounded-xl bg-white shadow-lg p-6">
+                        <h2 class="text-2xl font-semibold mb-4">Your Profile Settings</h2>
+                        <form id="settingsForm" class="space-y-4">
+                            <div>
+                                <label for="name" class="mb-1 block text-sm font-medium text-gray-700">Full Name</label>
+                                <input id="name" type="text" value="${doctorInfo.name}" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                            </div>
+                            <div>
+                                <label for="credentials" class="mb-1 block text-sm font-medium text-gray-700">Credentials (e.g., M.D., F.A.P.A.)</label>
+                                <input id="credentials" type="text" value="${doctorInfo.credentials}" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                            </div>
+                            <div>
+                                <label for="contact" class="mb-1 block text-sm font-medium text-gray-700">Contact Information</label>
+                                <input id="contact" type="text" value="${doctorInfo.contact}" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                            </div>
+                            <div class="flex justify-end space-x-2">
+                                <button type="submit" class="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> <span class="ml-2">Save Profile</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                `;
+                document.getElementById('settingsForm').onsubmit = (e) => {
+                    e.preventDefault();
+                    doctorInfo = {
+                        name: document.getElementById('name').value,
+                        credentials: document.getElementById('credentials').value,
+                        contact: document.getElementById('contact').value,
+                    };
+                    alert('Profile settings saved!');
+                    renderPatientDetails();
+                };
+            }
+
+            function showModal(title, text) {
+                let modal = document.getElementById('modal');
+                if (!modal) {
+                    modal = document.createElement('div');
+                    modal.id = 'modal';
+                    modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 p-4';
+                    document.body.appendChild(modal);
+                }
+                modal.innerHTML = `
+                    <div class="w-full max-w-lg rounded-lg bg-white p-6 shadow-lg">
+                        <h3 class="mb-2 text-xl font-semibold">${title}</h3>
+                        <div class="mb-4 max-h-96 overflow-y-auto">
+                            <p class="whitespace-pre-wrap text-sm text-gray-800">${text}</p>
+                        </div>
+                        <div class="flex justify-end space-x-2">
+                            <button id="closeModalBtn" class="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Close</button>
+                            <button id="copyToClipboardBtn" class="rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700">Copy</button>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('closeModalBtn').onclick = () => modal.remove();
+                document.getElementById('copyToClipboardBtn').onclick = () => {
+                    navigator.clipboard.writeText(text);
+                    document.getElementById('copyToClipboardBtn').textContent = "Copied!";
+                    setTimeout(() => document.getElementById('copyToClipboardBtn').textContent = "Copy", 2000);
+                };
+            }
+
+            // --- Firestore Data Functions ---
+
+            async function handleAddPatient(patientData) {
+                try {
+                    await db.collection(`artifacts/${appId}/users/${currentUserId}/patients`).add(patientData);
+                    currentView = 'list';
+                    renderContent();
+                } catch (e) {
+                    console.error("Error adding patient: ", e);
+                }
+            }
+
+            async function handleUpdatePatient(patientId, patientData) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${patientId}`).update(patientData);
+                    currentView = 'list';
+                    renderContent();
+                } catch (e) {
+                    console.error("Error updating patient: ", e);
+                }
+            }
+
+            async function handleDeletePatient(patientId) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${patientId}`).delete();
+                    renderContent();
+                } catch (e) {
+                    console.error("Error deleting patient: ", e);
+                }
+            }
+
+            async function handleAddNote(noteText) {
+                try {
+                    await db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/sessions`).add({
+                        note: noteText,
+                        date: new Date().toISOString().slice(0, 10),
+                        timestamp: new Date(),
+                    });
+                    document.getElementById('noteTextarea').value = '';
+                    renderContent();
+                } catch (e) {
+                    console.error("Error adding note: ", e);
+                }
+            }
+
+            async function handleDeleteNote(noteId) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/sessions/${noteId}`).delete();
+                    renderContent();
+                } catch (e) {
+                    console.error("Error deleting note: ", e);
+                }
+            }
+
+            async function handleAddMedication(medData) {
+                try {
+                    await db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/medications`).add(medData);
+                    renderContent();
+                } catch (e) {
+                    console.error("Error adding medication: ", e);
+                }
+            }
+
+            async function handleDeleteMedication(medId) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/medications/${medId}`).delete();
+                    renderContent();
+                } catch (e) {
+                    console.error("Error deleting medication: ", e);
+                }
+            }
+
+            async function handleAddBillingRecord(recordData) {
+                try {
+                    await db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/billing`).add(recordData);
+                    renderContent();
+                } catch (e) {
+                    console.error("Error adding billing record: ", e);
+                }
+            }
+
+            async function handleDeleteBillingRecord(recordId) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/billing/${recordId}`).delete();
+                    renderContent();
+                } catch (e) {
+                    console.error("Error deleting billing record: ", e);
+                }
+            }
+
+            async function handleAddAppointment(apptData) {
+                try {
+                    await db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/appointments`).add(apptData);
+                    renderContent();
+                } catch (e) {
+                    console.error("Error adding appointment: ", e);
+                }
+            }
+
+            async function handleDeleteAppointment(apptId) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/appointments/${apptId}`).delete();
+                    renderContent();
+                } catch (e) {
+                    console.error("Error deleting appointment: ", e);
+                }
+            }
+            
+            async function handleAddDocument() {
+                const newDocumentText = document.getElementById('newDocumentText').value;
+                if (!newDocumentText.trim()) return;
+                try {
+                    await db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/documents`).add({
+                        content: newDocumentText,
+                        type: "Note/Correspondence",
+                        date: new Date().toISOString().slice(0, 10),
+                        timestamp: new Date(),
+                    });
+                    document.getElementById('newDocumentText').value = '';
+                    renderContent();
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                }
+            }
+
+            async function handleDeleteDocument(docId) {
+                try {
+                    await db.doc(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/documents/${docId}`).delete();
+                    renderContent();
+                } catch (e) {
+                    console.error("Error deleting document: ", e);
+                }
+            }
+            
+            async function generateReferralLetter() {
+                showModal("Generating Referral Letter...", "Please wait...");
+                const systemPrompt = `You are a professional medical assistant drafting a referral letter for ${doctorInfo.name}. Write a concise, professional, and well-structured referral letter for a patient based on the provided clinical information. The letter should be addressed to a hypothetical colleague and include the patient's name, DOB, a brief clinical summary, and a clear reason for the referral. Do not include your own opinions or information outside of the provided context.`;
+                const userQuery = `Draft a referral letter for the following patient:\nPatient Name: ${selectedPatient.name}\nDate of Birth: ${selectedPatient.dob}\nDiagnosis: ${selectedPatient.diagnosis}\nReason for referral: The patient requires specialized care for their diagnosis, specifically for medication management and long-term treatment.`;
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+                const apiKey = "";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const result = await response.json();
+                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating letter. Please try again.";
+                    showModal("Generated Referral Letter", text);
+                } catch (error) {
+                    console.error("API call failed:", error);
+                    showModal("Error", "Failed to generate referral letter due to an API error.");
+                }
+            }
+
+            async function generateTreatmentPlan() {
+                showModal("Generating Treatment Plan...", "Please wait...");
+                let notes = [];
+                try {
+                    const notesRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/sessions`);
+                    const snapshot = await notesRef.orderBy('timestamp', 'desc').get();
+                    notes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching notes:", e);
+                }
+
+                const allNotes = notes.map(note => `[Note from ${note.date}]\n${note.note}`).join("\n\n");
+                const systemPrompt = `You are an expert mental health professional, Dr. ${doctorInfo.name}. Based on the provided patient diagnosis and session notes, generate a well-structured and comprehensive treatment plan. The plan should include long-term and short-term goals, recommended interventions, and potential follow-up actions. Ensure the tone is clinical and professional. Do not include your own opinions or information outside of the provided context.`;
+                const userQuery = `Generate a treatment plan for a patient named ${selectedPatient.name} with the diagnosis of ${selectedPatient.diagnosis}. Here are the session notes to inform the plan:\n\n${allNotes}`;
+
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+                
+                const apiKey = "";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const result = await response.json();
+                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating plan. Please try again.";
+                    showModal("Generated Treatment Plan", text);
+                } catch (error) {
+                    console.error("API call failed:", error);
+                    showModal("Error", "Failed to generate treatment plan due to an API error.");
+                }
+            }
+
+            async function generateCaseSummary() {
+                const summaryOutput = document.getElementById('summaryOutput');
+                const generateBtn = document.getElementById('generateSummaryBtn');
+                summaryOutput.innerHTML = `<p class="whitespace-pre-wrap text-sm text-gray-800">Generating summary...</p>`;
+                generateBtn.disabled = true;
+
+                let documents = [];
+                try {
+                    const docsRef = db.collection(`artifacts/${appId}/users/${currentUserId}/patients/${selectedPatient.id}/documents`);
+                    const snapshot = await docsRef.get();
+                    documents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                } catch (e) {
+                    console.error("Error fetching documents:", e);
+                }
+                
+                const allContent = documents.map(doc => `[${doc.type} from ${doc.date}]\n${doc.content}`).join("\n\n");
+                const systemPrompt = `You are a professional psychiatrist. Your task is to provide a comprehensive, concise, and professional case summary for a patient based on all provided documents, including notes and correspondence. Identify key themes, progress, challenges, and treatment plans. Do not include your own opinions or information outside of the provided context. Structure the summary in a professional, clinical style.`;
+                const userQuery = `Please provide a case summary for patient ${selectedPatient.name}, born on ${selectedPatient.dob}, based on the following documents:\n\n${allContent}`;
+                
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+                const apiKey = "";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const result = await response.json();
+                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating summary. Please try again.";
+                    summaryOutput.innerHTML = `<p class="whitespace-pre-wrap text-sm text-gray-800">${text}</p>`;
+                } catch (error) {
+                    console.error("API call failed:", error);
+                    summaryOutput.innerHTML = `<p class="whitespace-pre-wrap text-sm text-gray-800">Failed to generate summary due to an API error.</p>`;
+                } finally {
+                    generateBtn.disabled = false;
+                }
+            }
+            
+            // --- Initialization ---
+            async function initApp() {
+                try {
+                    firebase.initializeApp(firebaseConfig);
+                    auth = firebase.auth();
+                    db = firebase.firestore();
+                    db.settings({
+                        timestampsInSnapshots: true
+                    });
+                    
+                    // Sign in anonymously or with custom token
+                    if (initialAuthToken) {
+                        await auth.signInWithCustomToken(initialAuthToken);
+                    } else {
+                        await auth.signInAnonymously();
+                    }
+                    currentUserId = auth.currentUser.uid;
+                    
+                    // Set up snapshot listener for patients
+                    const patientCollectionPath = `artifacts/${appId}/users/${currentUserId}/patients`;
+                    db.collection(patientCollectionPath).onSnapshot(snapshot => {
+                        patients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        renderContent();
+                    }, (error) => {
+                        console.error("Error fetching patients:", error);
+                        document.getElementById('content').innerHTML = `
+                            <div class="flex items-center justify-center min-h-[300px] text-xl font-semibold text-red-500">
+                                Error: Missing or insufficient permissions.
+                            </div>
+                        `;
+                    });
+                    
+                    renderApp();
+
+                } catch (error) {
+                    console.error("Firebase initialization failed:", error);
+                    const root = document.getElementById('root');
+                    root.innerHTML = `
+                        <div class="flex items-center justify-center min-h-screen text-xl font-semibold text-red-500">
+                            Failed to initialize application. Please check the console for details.
+                        </div>
+                    `;
+                }
+            }
+            
+            initApp();
+        };
+    </script>
+</body>
+</html>
