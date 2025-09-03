@@ -4,13 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mindful Manager</title>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
         .printable-content { display: none; }
@@ -27,1147 +24,294 @@
     </style>
 </head>
 <body class="bg-gray-50 p-4 font-sans antialiased text-gray-900">
-    <div id="root"></div>
+    <div id="app" class="min-h-screen"></div>
 
-    <script type="text/babel">
+    <script>
         // Use environment variables for Firebase configuration. DO NOT EDIT these lines.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        const { useState, useEffect, createContext, useContext } = React;
+        let db;
+        let auth;
+        let userId = null;
+        let patients = [];
+        let view = 'list';
+        let selectedPatient = null;
+        let doctorInfo = { name: 'Dr. John Doe', credentials: 'M.D.', contact: '555-555-5555' };
+        let isGenerating = false;
+        let isModalOpen = false;
+        let modalContent = { title: '', text: '' };
 
-        const AppContext = createContext();
+        // Helper function for rendering elements
+        function h(tag, props, ...children) {
+            const element = document.createElement(tag);
+            if (props) {
+                Object.assign(element, props);
+                for (const key in props) {
+                    if (key.startsWith('on') && typeof props[key] === 'function') {
+                        element.addEventListener(key.substring(2).toLowerCase(), props[key]);
+                    } else if (key === 'className') {
+                        element.className = props[key];
+                    } else {
+                        element.setAttribute(key, props[key]);
+                    }
+                }
+            }
+            children.forEach(child => {
+                if (typeof child === 'string' || typeof child === 'number') {
+                    element.appendChild(document.createTextNode(child));
+                } else if (child) {
+                    element.appendChild(child);
+                }
+            });
+            return element;
+        }
 
-        const AppProvider = ({ children }) => {
-            const [db, setDb] = useState(null);
-            const [auth, setAuth] = useState(null);
-            const [userId, setUserId] = useState(null);
-            const [loading, setLoading] = useState(true);
+        // State management and rendering
+        function updateUI() {
+            const app = document.getElementById('app');
+            app.innerHTML = '';
+            app.appendChild(render());
+        }
 
-            useEffect(() => {
-                try {
-                    const firebaseApp = firebase.initializeApp(firebaseConfig);
-                    const authInstance = firebase.auth();
-                    const dbInstance = firebase.firestore();
-                    setAuth(authInstance);
-                    setDb(dbInstance);
+        // Firebase Initialization and Authentication
+        async function initializeFirebase() {
+            try {
+                const firebaseApp = firebase.initializeApp(firebaseConfig);
+                auth = firebase.auth();
+                db = firebase.firestore();
 
-                    const unsubscribe = authInstance.onAuthStateChanged(async (user) => {
-                        if (user) {
-                            setUserId(user.uid);
-                        } else {
-                            try {
-                                if (initialAuthToken) {
-                                    await authInstance.signInWithCustomToken(initialAuthToken);
-                                } else {
-                                    await authInstance.signInAnonymously();
-                                }
-                            } catch (error) {
-                                console.error("Firebase auth error:", error);
+                auth.onAuthStateChanged(async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                    } else {
+                        try {
+                            if (initialAuthToken) {
+                                await auth.signInWithCustomToken(initialAuthToken);
+                            } else {
+                                await auth.signInAnonymously();
                             }
+                        } catch (error) {
+                            console.error("Firebase auth error:", error);
+                            userId = 'auth-failed';
                         }
-                        setLoading(false);
-                    });
-                    return () => unsubscribe();
-                } catch (error) {
-                    console.error("Firebase initialization failed:", error);
-                    setLoading(false);
-                }
-            }, []);
+                    }
+                    if (userId && userId !== 'auth-failed') {
+                        setupDataListeners();
+                    }
+                    updateUI();
+                });
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                userId = 'auth-failed';
+                updateUI();
+            }
+        }
 
-            return (
-                <AppContext.Provider value={{ db, auth, userId, loading }}>
-                    {children}
-                </AppContext.Provider>
-            );
-        };
+        function setupDataListeners() {
+            if (!db || !userId) return;
+            const patientCollectionPath = `artifacts/${appId}/users/${userId}/patients`;
+            db.collection(patientCollectionPath).onSnapshot(snapshot => {
+                patients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                updateUI();
+            }, (error) => {
+                console.error("Error fetching patients:", error);
+                updateUI();
+            });
+        }
 
-        const App = () => {
-            const { db, userId, loading } = useContext(AppContext);
-            const [patients, setPatients] = useState([]);
-            const [view, setView] = useState('list');
-            const [selectedPatient, setSelectedPatient] = useState(null);
-            const [doctorInfo, setDoctorInfo] = useState({ name: 'Dr. John Doe', credentials: 'M.D.', contact: '555-555-5555' });
+        // Event listeners for UI interactions
+        function handleViewChange(newView, patient = null) {
+            view = newView;
+            selectedPatient = patient;
+            updateUI();
+        }
 
-            useEffect(() => {
-                if (!db || !userId) return;
-
+        async function handleAddPatient(patientData) {
+            try {
                 const patientCollectionPath = `artifacts/${appId}/users/${userId}/patients`;
-                const patientRef = db.collection(patientCollectionPath);
+                await db.collection(patientCollectionPath).add(patientData);
+                handleViewChange('list');
+            } catch (e) {
+                console.error("Error adding patient: ", e);
+            }
+        }
 
-                const unsubscribe = patientRef.onSnapshot(snapshot => {
-                    const patientList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setPatients(patientList);
-                }, (error) => {
-                    console.error("Error fetching patients:", error);
+        async function handleUpdatePatient(patientId, patientData) {
+            try {
+                const patientDocPath = `artifacts/${appId}/users/${userId}/patients/${patientId}`;
+                await db.doc(patientDocPath).update(patientData);
+                handleViewChange('list');
+            } catch (e) {
+                console.error("Error updating patient: ", e);
+            }
+        }
+
+        async function handleDeletePatient(patientId) {
+            try {
+                const patientDocPath = `artifacts/${appId}/users/${userId}/patients/${patientId}`;
+                await db.doc(patientDocPath).delete();
+            } catch (e) {
+                console.error("Error deleting patient: ", e);
+            }
+        }
+
+        // Components as functions returning HTML elements
+        function renderHeader() {
+            const PlusCircle = () => `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>`;
+            const User = () => `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+
+            const header = h('header', { className: 'flex flex-col sm:flex-row justify-between items-center py-6 px-4 sm:px-8 bg-white shadow-md rounded-xl mb-6' },
+                h('div', { className: 'flex items-center space-x-4 mb-4 sm:mb-0' },
+                    h('h1', { className: 'text-3xl font-bold tracking-tight text-gray-800' }, 'Mindful Manager'),
+                    h('p', { className: 'hidden md:block text-sm text-gray-500' }, 'Psychiatry Patient Management')
+                ),
+                h('div', { className: 'flex items-center space-x-2' },
+                    h('button', {
+                        onclick: () => handleViewChange('list'),
+                        className: 'flex items-center px-4 py-2 bg-gray-200 text-gray-700 hover:bg-gray-300 rounded-lg shadow-sm font-medium',
+                        innerHTML: User() + '<span class="ml-2">All Patients</span>'
+                    }),
+                    h('button', {
+                        onclick: () => handleViewChange('add'),
+                        className: 'flex items-center px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-sm font-medium',
+                        innerHTML: PlusCircle() + '<span class="ml-2">New Patient</span>'
+                    })
+                )
+            );
+            return header;
+        }
+        
+        function renderPatientList() {
+            const container = h('div', { className: 'rounded-xl bg-white shadow-lg p-6' });
+            container.appendChild(h('h2', { className: 'text-2xl font-semibold' }, 'Patient Roster'));
+            container.appendChild(h('p', { className: 'mt-1 text-sm text-gray-500' }, 'A complete list of your patients.'));
+
+            if (patients.length === 0) {
+                container.appendChild(h('p', { className: 'text-center text-gray-500 mt-4' }, 'No patients found. Add a new one to get started.'));
+            } else {
+                const list = h('div', { className: 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-4' });
+                patients.forEach(patient => {
+                    const card = h('div', { className: 'rounded-lg border bg-white shadow-sm hover:shadow-lg transition-shadow duration-300' });
+                    card.innerHTML = `
+                        <div class="p-4">
+                            <h3 class="text-lg font-semibold">${patient.name}</h3>
+                            <p class="text-xs text-gray-500">DOB: ${patient.dob}</p>
+                            <p class="text-sm mt-2">${patient.diagnosis}</p>
+                            <div class="mt-4 flex justify-between items-center">
+                                <button onclick="handleViewChange('details', patients.find(p => p.id === '${patient.id}'))" class="w-full rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600">
+                                    View Details
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    list.appendChild(card);
                 });
+                container.appendChild(list);
+            }
+            return container;
+        }
 
-                return () => unsubscribe();
-            }, [db, userId]);
-
-            const handleAddPatient = async (id, patientData) => {
-                try {
-                    const patientCollectionPath = `artifacts/${appId}/users/${userId}/patients`;
-                    await db.collection(patientCollectionPath).add(patientData);
-                    setView('list');
-                } catch (e) {
-                    console.error("Error adding patient: ", e);
-                }
-            };
-
-            const handleUpdatePatient = async (patientId, patientData) => {
-                try {
-                    const patientDocPath = `artifacts/${appId}/users/${userId}/patients/${patientId}`;
-                    await db.doc(patientDocPath).update(patientData);
-                    setView('list');
-                    setSelectedPatient(null);
-                } catch (e) {
-                    console.error("Error updating patient: ", e);
-                }
-            };
-
-            const handleDeletePatient = async (patientId) => {
-                try {
-                    const patientDocPath = `artifacts/${appId}/users/${userId}/patients/${patientId}`;
-                    await db.doc(patientDocPath).delete();
-                } catch (e) {
-                    console.error("Error deleting patient: ", e);
-                }
-            };
-
-            const renderContent = () => {
-                if (loading) {
-                    return <div className="flex items-center justify-center min-h-[300px] text-xl font-semibold text-gray-700">Loading...</div>;
-                }
-
-                if (!userId) {
-                    return <div className="flex items-center justify-center min-h-[300px] text-xl font-semibold text-red-500">Authentication failed. Please try again.</div>;
-                }
-
-                switch (view) {
-                    case 'list':
-                        return <PatientList patients={patients} setView={setView} setSelectedPatient={setSelectedPatient} handleDeletePatient={handleDeletePatient} />;
-                    case 'add':
-                        return <PatientForm onSave={handleAddPatient} setView={setView} />;
-                    case 'details':
-                        return <PatientDetails patient={selectedPatient} setView={setView} doctorInfo={doctorInfo} setDoctorInfo={setDoctorInfo} />;
-                    case 'edit':
-                        return <PatientForm patient={selectedPatient} onSave={handleUpdatePatient} setView={setView} />;
-                    case 'prescriptions':
-                        return <PrescriptionForm patient={selectedPatient} setView={setView} doctorInfo={doctorInfo} />;
-                    case 'settings':
-                        return <SettingsForm doctorInfo={doctorInfo} setDoctorInfo={setDoctorInfo} setView={setView} />;
-                    default:
-                        return null;
-                }
-            };
-
-            const PlusCircle = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>;
-            const User = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
-
-            return (
-                <div className="min-h-screen bg-gray-50 p-4 font-sans antialiased text-gray-900">
-                    <header className="flex flex-col sm:flex-row justify-between items-center py-6 px-4 sm:px-8 bg-white shadow-md rounded-xl mb-6">
-                        <div className="flex items-center space-x-4 mb-4 sm:mb-0">
-                            <h1 className="text-3xl font-bold tracking-tight text-gray-800">Mindful Manager</h1>
-                            <p className="hidden md:block text-sm text-gray-500">Psychiatry Patient Management</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                            <button onClick={() => { setView('list'); setSelectedPatient(null); }} className="flex items-center px-4 py-2 bg-gray-200 text-gray-700 hover:bg-gray-300 rounded-lg shadow-sm font-medium">
-                                <User /> <span className="ml-2">All Patients</span>
-                            </button>
-                            <button onClick={() => setView('add')} className="flex items-center px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-sm font-medium">
-                                <PlusCircle /> <span className="ml-2">New Patient</span>
-                            </button>
-                        </div>
-                    </header>
-                    <main className="container mx-auto max-w-5xl">
-                        <p className="text-sm text-gray-500 mb-4">User ID: <span className="font-mono text-xs bg-gray-200 rounded-md px-2 py-1 select-all">{userId}</span></p>
-                        {renderContent()}
-                    </main>
-                </div>
-            );
-        };
-
-        const PatientList = ({ patients, setView, setSelectedPatient, handleDeletePatient }) => {
-            const ConfirmationDialog = ({ onConfirm, children }) => {
-                const [open, setOpen] = useState(false);
-                return (
-                    <>
-                        <div onClick={() => setOpen(true)} className="inline-block cursor-pointer">
-                            {children}
-                        </div>
-                        {open && (
-                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 p-4">
-                                <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-lg">
-                                    <h3 className="mb-2 text-xl font-semibold">Confirm Deletion</h3>
-                                    <p className="mb-4 text-gray-500">Are you sure you want to delete this patient? This action cannot be undone.</p>
-                                    <div className="flex justify-end space-x-2">
-                                        <button onClick={() => setOpen(false)} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Cancel</button>
-                                        <button onClick={() => { onConfirm(); setOpen(false); }} className="rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700">Delete</button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </>
-                );
-            };
-
-            const Pencil = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>;
-            const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-
-            return (
-                <div className="rounded-xl bg-white shadow-lg">
-                    <div className="p-6">
-                        <h2 className="text-2xl font-semibold">Patient Roster</h2>
-                        <p className="mt-1 text-sm text-gray-500">A complete list of your patients.</p>
-                    </div>
-                    <div className="p-6 pt-0">
-                        {patients.length === 0 ? (
-                            <p className="text-center text-gray-500">No patients found. Add a new one to get started.</p>
-                        ) : (
-                            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-                                {patients.map(patient => (
-                                    <div key={patient.id} className="rounded-lg border bg-white shadow-sm transition-shadow duration-300 hover:shadow-lg">
-                                        <div className="flex items-start justify-between p-4 pb-2">
-                                            <div>
-                                                <h3 className="text-lg font-semibold">{patient.name}</h3>
-                                                <p className="text-xs text-gray-500">DOB: {patient.dob}</p>
-                                            </div>
-                                            <div className="flex space-x-1">
-                                                <button onClick={() => { setSelectedPatient(patient); setView('edit'); }} className="h-auto rounded-lg bg-transparent p-2 text-gray-500 hover:bg-gray-100 hover:text-blue-600">
-                                                    <Pencil />
-                                                </button>
-                                                <ConfirmationDialog onConfirm={() => handleDeletePatient(patient.id)}>
-                                                    <button className="h-auto rounded-lg bg-transparent p-2 text-gray-500 hover:bg-gray-100 hover:text-red-600">
-                                                        <Trash2 />
-                                                    </button>
-                                                </ConfirmationDialog>
-                                            </div>
-                                        </div>
-                                        <div className="px-6 py-2">
-                                            <p className="text-sm">{patient.diagnosis}</p>
-                                        </div>
-                                        <div className="p-6 pt-2">
-                                            <button onClick={() => { setSelectedPatient(patient); setView('details'); }} className="w-full rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600">
-                                                View Details
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-
-        const PatientForm = ({ patient, onSave, setView }) => {
-            const [formData, setFormData] = useState(patient || { name: '', dob: '', diagnosis: '' });
-
-            const handleChange = (e) => {
-                const { id, value } = e.target;
-                setFormData({ ...formData, [id]: value });
-            };
-
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                onSave(patient ? patient.id : null, formData);
-            };
-
-            return (
-                <div className="rounded-xl bg-white shadow-lg">
-                    <div className="p-6">
-                        <h2 className="text-2xl font-semibold">{patient ? 'Edit Patient' : 'Add New Patient'}</h2>
-                        <p className="mt-1 text-sm text-gray-500">
-                            {patient ? 'Update patient details.' : 'Fill out the form to add a new patient to your records.'}
-                        </p>
-                    </div>
-                    <form onSubmit={handleSubmit}>
-                        <div className="space-y-4 p-6 pt-0">
-                            <div>
-                                <label htmlFor="name" className="mb-1 block text-sm font-medium text-gray-700">Name</label>
-                                <input id="name" type="text" value={formData.name} onChange={handleChange} required className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            </div>
-                            <div>
-                                <label htmlFor="dob" className="mb-1 block text-sm font-medium text-gray-700">Date of Birth</label>
-                                <input id="dob" type="date" value={formData.dob} onChange={handleChange} required className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            </div>
-                            <div>
-                                <label htmlFor="diagnosis" className="mb-1 block text-sm font-medium text-gray-700">Diagnosis</label>
-                                <textarea id="diagnosis" value={formData.diagnosis} onChange={handleChange} rows="3" className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            </div>
-                        </div>
-                        <div className="flex justify-end space-x-2 p-6">
-                            <button type="button" onClick={() => setView('list')} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Cancel</button>
-                            <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">{patient ? 'Update Patient' : 'Add Patient'}</button>
-                        </div>
-                    </form>
-                </div>
-            );
-        };
-
-        const PatientDetails = ({ patient, setView, doctorInfo, setDoctorInfo }) => {
-            const [tab, setTab] = useState('notes');
-            const [isModalOpen, setIsModalOpen] = useState(false);
-            const [modalContent, setModalContent] = useState({ title: '', text: '' });
-            const [isLoadingModal, setIsLoadingModal] = useState(false);
-
-            const { db, userId } = useContext(AppContext);
-            const userIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
-            const magicSparkle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/><path d="M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg>;
-            const settings = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.39a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.73v.44a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.39a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.73v.44a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.39a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.73v.18a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.73v-.44a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.73v-.44a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.73v-.18a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>;
-
-            const handleOpenModal = (title, text) => {
-                setModalContent({ title, text });
-                setIsModalOpen(true);
-            };
-            const handleCloseModal = () => {
-                setIsModalOpen(false);
-                setModalContent({ title: '', text: '' });
-            };
+        function renderPatientForm(patient = null) {
+            const formContainer = h('div', { className: 'rounded-xl bg-white shadow-lg p-6' });
+            formContainer.appendChild(h('h2', { className: 'text-2xl font-semibold' }, patient ? 'Edit Patient' : 'Add New Patient'));
+            formContainer.appendChild(h('p', { className: 'mt-1 text-sm text-gray-500' }, patient ? 'Update patient details.' : 'Fill out the form to add a new patient to your records.'));
             
-            const generateReferralLetter = async () => {
-                setIsLoadingModal(true);
-                handleOpenModal("Generating Referral Letter...", "");
-
-                const systemPrompt = `You are a professional medical assistant drafting a referral letter for ${doctorInfo.name}. Write a concise, professional, and well-structured referral letter for a patient based on the provided clinical information. The letter should be addressed to a hypothetical colleague and include the patient's name, DOB, a brief clinical summary, and a clear reason for the referral. Do not include your own opinions or information outside of the provided context.`;
-                const userQuery = `Draft a referral letter for the following patient:
-                Patient Name: ${patient.name}
-                Date of Birth: ${patient.dob}
-                Diagnosis: ${patient.diagnosis}
-                Reason for referral: The patient requires specialized care for their diagnosis, specifically for medication management and long-term treatment.`;
-
-                const payload = {
-                    contents: [{ parts: [{ text: userQuery }] }],
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                };
-                
-                const apiKey = "";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating letter. Please try again.";
-                    handleOpenModal("Generated Referral Letter", text);
-                } catch (error) {
-                    console.error("API call failed:", error);
-                    handleOpenModal("Error", "Failed to generate referral letter due to an API error.");
-                } finally {
-                    setIsLoadingModal(false);
-                }
-            };
-
-            return (
-                <div className="rounded-xl bg-white shadow-lg">
-                    <div className="p-6">
-                        <h2 className="flex items-center text-2xl font-semibold">
-                            {userIcon({})}
-                            {patient.name}
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-500">
-                            Patient Profile and Administrative Records
-                        </p>
-                        <div className="mt-4 flex space-x-2 border-b border-gray-200">
-                            <button onClick={() => setTab('notes')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'notes' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Session Notes</button>
-                            <button onClick={() => setTab('medications')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'medications' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Medications</button>
-                            <button onClick={() => setTab('billing')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'billing' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Billing</button>
-                            <button onClick={() => setTab('appointments')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'appointments' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Appointments</button>
-                            <button onClick={() => setTab('summary')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'summary' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Case Summary</button>
-                            <button onClick={() => setTab('settings')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'settings' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Settings</button>
-                            <button onClick={generateReferralLetter} disabled={isLoadingModal} className={`flex items-center rounded-lg px-4 py-2 text-sm font-medium transition-colors ${isLoadingModal ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                                {magicSparkle({})} Generate Referral ✨
-                            </button>
-                        </div>
-                    </div>
-                    <div className="p-6 pt-0">
-                        {tab === 'notes' && <SessionNotesSection patient={patient} doctorInfo={doctorInfo} />}
-                        {tab === 'medications' && <MedicationSection patient={patient} setView={setView} />}
-                        {tab === 'billing' && <BillingSection patient={patient} />}
-                        {tab === 'appointments' && <AppointmentsSection patient={patient} />}
-                        {tab === 'summary' && <CaseSummarySection patient={patient} />}
-                        {tab === 'settings' && <SettingsForm doctorInfo={doctorInfo} setDoctorInfo={setDoctorInfo} />}
-                    </div>
-                    <div className="p-6">
-                        <button onClick={() => setView('list')} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">
-                            Back to List
-                        </button>
-                    </div>
-                    {isModalOpen && (
-                        <Modal title={modalContent.title} text={modalContent.text} onClose={handleCloseModal} isLoading={isLoadingModal} />
-                    )}
-                </div>
-            );
-        };
-
-        const Modal = ({ title, text, onClose, isLoading }) => {
-            const [copyStatus, setCopyStatus] = useState("Copy");
-            const copyToClipboard = () => {
-                navigator.clipboard.writeText(text).then(() => {
-                    setCopyStatus("Copied!");
-                    setTimeout(() => setCopyStatus("Copy"), 2000);
-                }).catch(err => {
-                    console.error('Failed to copy text: ', err);
-                    setCopyStatus("Failed to copy");
-                });
-            };
-
-            return (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 p-4">
-                    <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-lg">
-                        <h3 className="mb-2 text-xl font-semibold">{title}</h3>
-                        <div className="mb-4 max-h-96 overflow-y-auto">
-                            {isLoading ? (
-                                <div className="text-center text-gray-500">Loading...</div>
-                            ) : (
-                                <p className="whitespace-pre-wrap text-sm text-gray-800">{text}</p>
-                            )}
-                        </div>
-                        <div className="flex justify-end space-x-2">
-                            <button onClick={onClose} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Close</button>
-                            <button onClick={copyToClipboard} className="rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700">{copyStatus}</button>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        const SessionNotesSection = ({ patient, doctorInfo }) => {
-            const { db, userId } = useContext(AppContext);
-            const [notes, setNotes] = useState([]);
-            const [isModalOpen, setIsModalOpen] = useState(false);
-            const [modalContent, setModalContent] = useState({ title: '', text: '' });
-            const [isLoadingModal, setIsLoadingModal] = useState(false);
-            
-            const handleOpenModal = (title, text) => {
-                setModalContent({ title, text });
-                setIsModalOpen(true);
-            };
-            const handleCloseModal = () => {
-                setIsModalOpen(false);
-                setModalContent({ title: '', text: '' });
-            };
-            
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-
-                const notesCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sessions`;
-                const notesRef = db.collection(notesCollectionPath);
-
-                const unsubscribe = notesRef.onSnapshot(snapshot => {
-                    const notesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setNotes(notesList.sort((a, b) => new Date(b.timestamp.toDate()) - new Date(a.timestamp.toDate())));
-                }, (error) => {
-                    console.error("Error fetching notes:", error);
-                });
-
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddNote = async (noteText) => {
-                try {
-                    const notesCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sessions`;
-                    await db.collection(notesCollectionPath).add({
-                        note: noteText,
-                        date: new Date().toISOString().slice(0, 10),
-                        timestamp: new Date(),
-                    });
-                } catch (e) {
-                    console.error("Error adding note: ", e);
-                }
-            };
-
-            const handleDeleteNote = async (noteId) => {
-                try {
-                    const noteDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sessions/${noteId}`;
-                    await db.doc(noteDocPath).delete();
-                } catch (e) {
-                    console.error("Error deleting note: ", e);
-                }
-            };
-            
-            const generateTreatmentPlan = async () => {
-                setIsLoadingModal(true);
-                handleOpenModal("Generating Treatment Plan...", "");
-                
-                const allNotes = notes.map(note => `[Note from ${note.date}]\n${note.note}`).join("\n\n");
-                const systemPrompt = `You are an expert mental health professional, Dr. ${doctorInfo.name}. Based on the provided patient diagnosis and session notes, generate a well-structured and comprehensive treatment plan. The plan should include long-term and short-term goals, recommended interventions, and potential follow-up actions. Ensure the tone is clinical and professional. Do not include your own opinions or information outside of the provided context.`;
-                const userQuery = `Generate a treatment plan for a patient named ${patient.name} with the diagnosis of ${patient.diagnosis}. Here are the session notes to inform the plan:\n\n${allNotes}`;
-
-                const payload = {
-                    contents: [{ parts: [{ text: userQuery }] }],
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                };
-                
-                const apiKey = "";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating plan. Please try again.";
-                    handleOpenModal("Generated Treatment Plan", text);
-                } catch (error) {
-                    console.error("API call failed:", error);
-                    handleOpenModal("Error", "Failed to generate treatment plan due to an API error.");
-                } finally {
-                    setIsLoadingModal(false);
-                }
-            };
-
-            const ConfirmationDialog = ({ onConfirm, children }) => {
-                const [open, setOpen] = useState(false);
-                return (
-                    <>
-                        <div onClick={() => setOpen(true)} className="inline-block cursor-pointer">
-                            {children}
-                        </div>
-                        {open && (
-                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 p-4">
-                                <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-lg">
-                                    <h3 className="mb-2 text-xl font-semibold">Confirm Deletion</h3>
-                                    <p className="mb-4 text-gray-500">Are you sure you want to delete this session note? This action cannot be undone.</p>
-                                    <div className="flex justify-end space-x-2">
-                                        <button onClick={() => setOpen(false)} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Cancel</button>
-                                        <button onClick={() => { onConfirm(); setOpen(false); }} className="rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700">Delete</button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </>
-                );
-            };
-            const CalendarDays = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>;
-            const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-            const magicSparkle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/><path d="M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg>;
-
-
-            return (
-                <>
-                    <div className="space-y-6">
-                        <div className="rounded-lg bg-gray-100 p-4">
-                            <h3 className="mb-2 text-lg font-bold">Patient Information</h3>
-                            <p><strong>Date of Birth:</strong> {patient.dob}</p>
-                            <p><strong>Diagnosis:</strong> {patient.diagnosis}</p>
-                            <button onClick={generateTreatmentPlan} disabled={isLoadingModal} className={`flex items-center rounded-lg mt-4 px-4 py-2 font-medium transition-colors ${isLoadingModal ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                                {magicSparkle({})} Generate Treatment Plan ✨
-                            </button>
-                        </div>
-                        <div>
-                            <h3 className="mb-4 text-lg font-bold">Session Notes</h3>
-                            <SessionNotesForm onAddNote={handleAddNote} />
-                            <div className="pr-2 mt-4 max-h-96 space-y-4 overflow-y-auto">
-                                {notes.length === 0 ? (
-                                    <p className="text-gray-500">No session notes found. Add your first note above.</p>
-                                ) : (
-                                    notes.map(note => (
-                                        <div key={note.id} className="relative rounded-lg border border-gray-200 bg-gray-50 p-4">
-                                            <div className="mb-2 flex items-center justify-between">
-                                                <p className="flex items-center text-sm font-medium text-gray-600">
-                                                    <CalendarDays className="mr-1" />
-                                                    {note.date}
-                                                </p>
-                                                <ConfirmationDialog onConfirm={() => handleDeleteNote(note.id)}>
-                                                    <button className="h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600">
-                                                        <Trash2 />
-                                                    </button>
-                                                </ConfirmationDialog>
-                                            </div>
-                                            <p className="whitespace-pre-wrap text-gray-800">{note.note}</p>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                    {isModalOpen && (
-                        <Modal title={modalContent.title} text={modalContent.text} onClose={handleCloseModal} isLoading={isLoadingModal} />
-                    )}
-                </>
-            );
-        };
-
-        const SessionNotesForm = ({ onAddNote }) => {
-            const [noteText, setNoteText] = useState('');
-            const ScrollText = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s2.5 5 10 5 10-5 10-5"/><path d="M12 17v-7s-1-2-3-2c-2 0-3 2-3 2"/><path d="M12 17v-7s1-2 3-2c2 0 3 2 3 2"/><circle cx="12" cy="7" r="2"/></svg>;
-
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                if (noteText.trim()) {
-                    onAddNote(noteText);
-                    setNoteText('');
-                }
-            };
-
-            return (
-                <form onSubmit={handleSubmit} className="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
-                    <h4 className="mb-2 text-md font-semibold">Add New Note</h4>
-                    <textarea
-                        value={noteText}
-                        onChange={(e) => setNoteText(e.target.value)}
-                        rows="4"
-                        placeholder="Enter your session notes here..."
-                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
-                    />
-                    <div className="mt-3 flex justify-end">
-                        <button type="submit" className="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
-                            <ScrollText className="mr-2" /> Save Note
-                        </button>
-                    </div>
-                </form>
-            );
-        };
-
-        const MedicationSection = ({ patient, setView }) => {
-            const { db, userId } = useContext(AppContext);
-            const [medications, setMedications] = useState([]);
-            const [newMedication, setNewMedication] = useState({ name: '', dosage: '', frequency: '' });
-
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-
-                const medicationCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/medications`;
-                const medicationRef = db.collection(medicationCollectionPath);
-                const unsubscribe = medicationRef.onSnapshot(snapshot => {
-                    const medsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setMedications(medsList);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddMedication = async (e) => {
-                e.preventDefault();
-                try {
-                    const medicationCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/medications`;
-                    await db.collection(medicationCollectionPath).add(newMedication);
-                    setNewMedication({ name: '', dosage: '', frequency: '' });
-                } catch (e) {
-                    console.error("Error adding medication: ", e);
-                }
-            };
-
-            const handleDeleteMedication = async (medId) => {
-                try {
-                    const medDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/medications/${medId}`;
-                    await db.doc(medDocPath).delete();
-                } catch (e) {
-                    console.error("Error deleting medication: ", e);
-                }
-            };
-            
-            const PlusCircle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>;
-            const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-            const Pill = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 20.25a1 1 0 0 0-1.75-.85L5.75 16.75A1 1 0 0 0 5 16V8.25a1 1 0 0 1 .5-.86L10 5.25a1 1 0 0 1 1.5-.86L15 6.75a1 1 0 0 1 .5.86V14a1 1 0 0 0-.75.85l-2.5 2.5a1 1 0 0 0-.75.85V20.25z"/></svg>;
-            const FileText = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>;
-
-            return (
-                <div className="space-y-6">
-                    <div className="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
-                        <h4 className="mb-2 text-md font-semibold">Add New Medication</h4>
-                        <form onSubmit={handleAddMedication} className="flex flex-col space-y-3 md:flex-row md:space-x-3 md:space-y-0">
-                            <input type="text" placeholder="Medication Name" value={newMedication.name} onChange={(e) => setNewMedication({...newMedication, name: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <input type="text" placeholder="Dosage" value={newMedication.dosage} onChange={(e) => setNewMedication({...newMedication, dosage: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <input type="text" placeholder="Frequency" value={newMedication.frequency} onChange={(e) => setNewMedication({...newMedication, frequency: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <button type="submit" className="flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
-                                <PlusCircle className="mr-2" /> Add
-                            </button>
-                        </form>
-                    </div>
-
-                    <div>
-                        <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-lg font-bold">Current Medications</h3>
-                            <button onClick={() => { setView('prescriptions'); }} className="flex items-center rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700">
-                                <FileText className="mr-2" /> Generate Prescription
-                            </button>
-                        </div>
-                        
-                        {medications.length === 0 ? (
-                            <p className="text-gray-500">No medications listed.</p>
-                        ) : (
-                            <div className="space-y-4">
-                                {medications.map(med => (
-                                    <div key={med.id} className="relative flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-4">
-                                        <div>
-                                            <h4 className="text-md font-semibold flex items-center"><Pill className="mr-2"/>{med.name}</h4>
-                                            <p className="text-sm text-gray-600"><strong>Dosage:</strong> {med.dosage}</p>
-                                            <p className="text-sm text-gray-600"><strong>Frequency:</strong> {med.frequency}</p>
-                                        </div>
-                                        <button onClick={() => handleDeleteMedication(med.id)} className="h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600">
-                                            <Trash2 />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-
-        const BillingSection = ({ patient }) => {
-            const { db, userId } = useContext(AppContext);
-            const [billingRecords, setBillingRecords] = useState([]);
-            const [newRecord, setNewRecord] = useState({ date: new Date().toISOString().slice(0, 10), service: '', amount: '', status: 'unpaid' });
-
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-
-                const billingCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/billing`;
-                const billingRef = db.collection(billingCollectionPath);
-                const unsubscribe = billingRef.onSnapshot(snapshot => {
-                    const records = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setBillingRecords(records);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddRecord = async (e) => {
-                e.preventDefault();
-                try {
-                    const billingCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/billing`;
-                    await db.collection(billingCollectionPath).add(newRecord);
-                    setNewRecord({ date: new Date().toISOString().slice(0, 10), service: '', amount: '', status: 'unpaid' });
-                } catch (e) {
-                    console.error("Error adding billing record: ", e);
-                }
-            };
-
-            const handleDeleteRecord = async (recordId) => {
-                try {
-                    const recordDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/billing/${recordId}`;
-                    await db.doc(recordDocPath).delete();
-                } catch (e) {
-                    console.error("Error deleting billing record: ", e);
-                }
-            };
-
-            const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-
-            return (
-                <div className="space-y-6">
-                    <div className="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
-                        <h4 className="mb-2 text-md font-semibold">Add New Billing Record</h4>
-                        <form onSubmit={handleAddRecord} className="space-y-3">
-                            <input type="date" value={newRecord.date} onChange={(e) => setNewRecord({...newRecord, date: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <input type="text" placeholder="Service Description" value={newRecord.service} onChange={(e) => setNewRecord({...newRecord, service: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <input type="number" placeholder="Amount ($)" value={newRecord.amount} onChange={(e) => setNewRecord({...newRecord, amount: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <select value={newRecord.status} onChange={(e) => setNewRecord({...newRecord, status: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">
-                                <option value="unpaid">Unpaid</option>
-                                <option value="paid">Paid</option>
-                            </select>
-                            <div className="flex justify-end">
-                                <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">Add Record</button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <div>
-                        <h3 className="mb-2 text-lg font-bold">Billing History</h3>
-                        {billingRecords.length === 0 ? (
-                            <p className="text-gray-500">No billing records found.</p>
-                        ) : (
-                            <div className="overflow-x-auto rounded-lg border border-gray-200">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Service</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
-                                            <th className="relative px-6 py-3"><span className="sr-only">Delete</span></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-200 bg-white">
-                                        {billingRecords.map(record => (
-                                            <tr key={record.id}>
-                                                <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-900">{record.date}</td>
-                                                <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-900">{record.service}</td>
-                                                <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-900">${parseFloat(record.amount).toFixed(2)}</td>
-                                                <td className="whitespace-nowrap px-6 py-4 text-sm">
-                                                    <span className={`rounded-full px-2 py-1 text-xs font-semibold uppercase ${record.status === 'paid' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{record.status}</span>
-                                                </td>
-                                                <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
-                                                    <button onClick={() => handleDeleteRecord(record.id)} className="text-red-600 hover:text-red-900">
-                                                        <Trash2 />
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-
-        const AppointmentsSection = ({ patient }) => {
-            const { db, userId } = useContext(AppContext);
-            const [appointments, setAppointments] = useState([]);
-            const [newAppointment, setNewAppointment] = useState({ date: new Date().toISOString().slice(0, 10), time: '', title: '' });
-
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-
-                const appointmentsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/appointments`;
-                const appointmentsRef = db.collection(appointmentsCollectionPath);
-
-                const unsubscribe = appointmentsRef.onSnapshot(snapshot => {
-                    const records = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setAppointments(records.sort((a,b) => (a.date + a.time).localeCompare(b.date + b.time)));
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddAppointment = async (e) => {
-                e.preventDefault();
-                try {
-                    const appointmentsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/appointments`;
-                    await db.collection(appointmentsCollectionPath).add(newAppointment);
-                    setNewAppointment({ date: new Date().toISOString().slice(0, 10), time: '', title: '' });
-                } catch (e) {
-                    console.error("Error adding appointment: ", e);
-                }
-            };
-
-            const handleDeleteAppointment = async (apptId) => {
-                try {
-                    const apptDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/appointments/${apptId}`;
-                    await db.doc(apptDocPath).delete();
-                } catch (e) {
-                    console.error("Error deleting appointment: ", e);
-                }
-            };
-
-            const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-
-            return (
-                <div className="space-y-6">
-                    <div className="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
-                        <h4 className="mb-2 text-md font-semibold">Schedule New Appointment</h4>
-                        <form onSubmit={handleAddAppointment} className="space-y-3">
-                            <input type="date" value={newAppointment.date} onChange={(e) => setNewAppointment({...newAppointment, date: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <input type="time" value={newAppointment.time} onChange={(e) => setNewAppointment({...newAppointment, time: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <input type="text" placeholder="Title/Notes" value={newAppointment.title} onChange={(e) => setNewAppointment({...newAppointment, title: e.target.value})} required className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                            <div className="flex justify-end">
-                                <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">Schedule</button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <div>
-                        <h3 className="mb-2 text-lg font-bold">Upcoming Appointments</h3>
-                        {appointments.length === 0 ? (
-                            <p className="text-gray-500">No appointments scheduled.</p>
-                        ) : (
-                            <div className="space-y-4">
-                                {appointments.map(appt => (
-                                    <div key={appt.id} className="relative flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-4">
-                                        <div>
-                                            <p className="text-sm text-gray-600"><strong>Date:</strong> {appt.date}</p>
-                                            <p className="text-sm text-gray-600"><strong>Time:</strong> {appt.time}</p>
-                                            <p className="text-sm font-semibold">{appt.title}</p>
-                                        </div>
-                                        <button onClick={() => handleDeleteAppointment(appt.id)} className="h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600">
-                                            <Trash2 />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-
-        const PrescriptionForm = ({ patient, setView, doctorInfo }) => {
-            const [formData, setFormData] = useState({
-                date: new Date().toISOString().slice(0, 10),
-                medication: '',
-                dosage: '',
-                frequency: '',
-                refills: '0',
-                instructions: '',
+            const form = h('form', {
+                onsubmit: (e) => {
+                    e.preventDefault();
+                    const formData = {
+                        name: document.getElementById('name').value,
+                        dob: document.getElementById('dob').value,
+                        diagnosis: document.getElementById('diagnosis').value,
+                    };
+                    if (patient) {
+                        handleUpdatePatient(patient.id, formData);
+                    } else {
+                        handleAddPatient(formData);
+                    }
+                },
+                className: 'space-y-4 mt-4'
             });
 
-            const handleChange = (e) => {
-                const { id, value } = e.target;
-                setFormData({ ...formData, [id]: value });
-            };
-
-            const handlePrint = () => {
-                window.print();
-            };
-            
-            const PrescriptionIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 10v4"/><path d="M12 14v4"/></svg>;
-
-            return (
-                <>
-                    <div className="rounded-xl bg-white shadow-lg p-6">
-                        <h2 className="text-2xl font-semibold mb-4">Prescription Generator</h2>
-                        <div className="flex flex-col md:flex-row md:space-x-8">
-                            <div className="flex-1 space-y-4">
-                                <div>
-                                    <label htmlFor="date" className="block text-sm font-medium text-gray-700">Date</label>
-                                    <input id="date" type="date" value={formData.date} onChange={handleChange} required className="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
-                                </div>
-                                <div>
-                                    <label htmlFor="medication" className="block text-sm font-medium text-gray-700">Medication Name</label>
-                                    <input id="medication" type="text" value={formData.medication} onChange={handleChange} required className="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
-                                </div>
-                                <div>
-                                    <label htmlFor="dosage" className="block text-sm font-medium text-gray-700">Dosage</label>
-                                    <input id="dosage" type="text" value={formData.dosage} onChange={handleChange} required className="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
-                                </div>
-                                <div>
-                                    <label htmlFor="frequency" className="block text-sm font-medium text-gray-700">Frequency</label>
-                                    <input id="frequency" type="text" value={formData.frequency} onChange={handleChange} required className="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
-                                </div>
-                                <div>
-                                    <label htmlFor="instructions" className="block text-sm font-medium text-gray-700">Instructions</label>
-                                    <textarea id="instructions" rows="3" value={formData.instructions} onChange={handleChange} className="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
-                                </div>
-                                <div>
-                                    <label htmlFor="refills" className="block text-sm font-medium text-gray-700">Refills</label>
-                                    <input id="refills" type="number" value={formData.refills} onChange={handleChange} required className="mt-1 block w-full rounded-md shadow-sm border-gray-300 px-3 py-2" />
-                                </div>
-                            </div>
-                            <div className="flex-1 mt-6 md:mt-0 p-6 bg-gray-100 border border-gray-300 rounded-lg">
-                                <h3 className="text-lg font-bold mb-4">Prescription Preview</h3>
-                                <div className="printable-content p-4">
-                                    <h1 className="text-center font-bold text-xl mb-4">Patient Prescription</h1>
-                                    <p className="text-sm mb-2"><strong>Patient Name:</strong> {patient.name}</p>
-                                    <p className="text-sm mb-2"><strong>Date of Birth:</strong> {patient.dob}</p>
-                                    <p className="text-sm mb-2"><strong>Date:</strong> {formData.date}</p>
-                                    <hr className="my-4 border-gray-300"/>
-                                    <p className="text-md font-semibold">Rx:</p>
-                                    <p className="text-md ml-4"><strong>Medication:</strong> {formData.medication}</p>
-                                    <p className="text-md ml-4"><strong>Dosage:</strong> {formData.dosage}</p>
-                                    <p className="text-md ml-4"><strong>Frequency:</strong> {formData.frequency}</p>
-                                    <p className="text-md ml-4"><strong>Instructions:</strong> {formData.instructions}</p>
-                                    <p className="text-md mt-4"><strong>Refills:</strong> {formData.refills}</p>
-                                    <div className="mt-12">
-                                        <p>_________________________</p>
-                                        <p className="text-sm">{doctorInfo.name}</p>
-                                        <p className="text-sm">{doctorInfo.credentials}</p>
-                                        <p className="text-sm">{doctorInfo.contact}</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex justify-end space-x-2 mt-6">
-                            <button type="button" onClick={() => setView('details')} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Back</button>
-                            <button onClick={handlePrint} className="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
-                                <PrescriptionIcon className="mr-2" /> Generate & Print
-                            </button>
-                        </div>
-                    </div>
-                </>
-            );
-        };
-
-        const SettingsForm = ({ doctorInfo, setDoctorInfo, setView }) => {
-            const [formData, setFormData] = useState(doctorInfo);
-
-            const handleChange = (e) => {
-                const { id, value } = e.target;
-                setFormData({ ...formData, [id]: value });
-            };
-
-            const handleSave = (e) => {
-                e.preventDefault();
-                setDoctorInfo(formData);
-                setView('details');
-            };
-
-            const UserCircle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
-
-            return (
-                <div className="rounded-xl bg-white shadow-lg p-6">
-                    <h2 className="text-2xl font-semibold mb-4">Your Profile Settings</h2>
-                    <form onSubmit={handleSave} className="space-y-4">
-                        <div>
-                            <label htmlFor="name" className="mb-1 block text-sm font-medium text-gray-700">Full Name</label>
-                            <input id="name" type="text" value={formData.name} onChange={handleChange} className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                        </div>
-                        <div>
-                            <label htmlFor="credentials" className="mb-1 block text-sm font-medium text-gray-700">Credentials (e.g., M.D., F.A.P.A.)</label>
-                            <input id="credentials" type="text" value={formData.credentials} onChange={handleChange} className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                        </div>
-                        <div>
-                            <label htmlFor="contact" className="mb-1 block text-sm font-medium text-gray-700">Contact Information</label>
-                            <input id="contact" type="text" value={formData.contact} onChange={handleChange} className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
-                        </div>
-                        <div className="flex justify-end space-x-2">
-                            <button type="submit" className="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
-                                <UserCircle className="mr-2" /> Save Profile
-                            </button>
-                        </div>
-                    </form>
+            form.innerHTML = `
+                <div>
+                    <label for="name" class="block text-sm font-medium text-gray-700">Name</label>
+                    <input id="name" type="text" value="${patient ? patient.name : ''}" required class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">
                 </div>
-            );
-        };
-
-        const CaseSummarySection = ({ patient }) => {
-            const { db, userId } = useContext(AppContext);
-            const [documents, setDocuments] = useState([]);
-            const [summary, setSummary] = useState("Click 'Generate Summary' to create a case summary from the documents below.");
-            const [isGenerating, setIsGenerating] = useState(false);
-            const [newDocumentText, setNewDocumentText] = useState("");
-
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-                const docsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/documents`;
-                const docsRef = db.collection(docsCollectionPath);
-
-                const unsubscribe = docsRef.onSnapshot(snapshot => {
-                    const docsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setDocuments(docsList);
-                }, (error) => {
-                    console.error("Error fetching documents:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddDocument = async () => {
-                if (!newDocumentText.trim()) return;
-                try {
-                    const docsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/documents`;
-                    await db.collection(docsCollectionPath).add({
-                        content: newDocumentText,
-                        type: "Note/Correspondence",
-                        date: new Date().toISOString().slice(0, 10),
-                        timestamp: new Date(),
-                    });
-                    setNewDocumentText("");
-                } catch (e) {
-                    console.error("Error adding document: ", e);
-                }
-            };
-
-            const generateCaseSummary = async () => {
-                setIsGenerating(true);
-                setSummary("Generating summary...");
-
-                const allContent = documents.map(doc => `[${doc.type} from ${doc.date}]\n${doc.content}`).join("\n\n");
-                
-                const systemPrompt = `You are a professional psychiatrist. Your task is to provide a comprehensive, concise, and professional case summary for a patient based on all provided documents, including notes and correspondence. Identify key themes, progress, challenges, and treatment plans. Do not include your own opinions or information outside of the provided context. Structure the summary in a professional, clinical style.`;
-                const userQuery = `Please provide a case summary for patient ${patient.name}, born on ${patient.dob}, based on the following documents:\n\n${allContent}`;
-                
-                const payload = {
-                    contents: [{ parts: [{ text: userQuery }] }],
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                };
-
-                const apiKey = "";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating summary. Please try again.";
-                    setSummary(text);
-                } catch (error) {
-                    console.error("API call failed:", error);
-                    setSummary("Failed to generate summary due to an API error.");
-                } finally {
-                    setIsGenerating(false);
-                }
-            };
-            
-            const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
-            const Plus = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>;
-            const RefreshCcw = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9c-3.34 0-6.19 1.63-8 4"/><path d="M3 12a9 9 0 0 0 9 9c3.34 0 6.19-1.63 8-4"/><path d="M17 12H7"/><path d="M13 8l4 4-4 4"/></svg>;
-
-            const handleDeleteDocument = async (docId) => {
-                try {
-                    const docPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/documents/${docId}`;
-                    await db.doc(docPath).delete();
-                } catch (e) {
-                    console.error("Error deleting document: ", e);
-                }
-            };
-
-            return (
-                <div className="space-y-6">
-                    <div className="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
-                        <h4 className="mb-2 text-md font-semibold">Generate Case Summary</h4>
-                        <div className="rounded-lg bg-gray-100 p-4 border border-gray-300">
-                            <p className="whitespace-pre-wrap text-sm text-gray-800">{summary}</p>
-                        </div>
-                        <div className="flex justify-end mt-4">
-                            <button onClick={generateCaseSummary} disabled={isGenerating} className={`flex items-center rounded-lg px-4 py-2 font-medium transition-colors ${isGenerating ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-                                <RefreshCcw className="mr-2" /> {isGenerating ? 'Generating...' : 'Generate Summary'}
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div className="rounded-lg border border-gray-300 bg-white p-4 shadow-sm">
-                        <h4 className="mb-2 text-md font-semibold">Add New Document</h4>
-                        <textarea
-                            value={newDocumentText}
-                            onChange={(e) => setNewDocumentText(e.target.value)}
-                            rows="4"
-                            placeholder="Paste or type a new document (e.g., letter, email, lab result) here..."
-                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
-                        />
-                        <div className="flex justify-end mt-3">
-                            <button onClick={handleAddDocument} className="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
-                                <Plus className="mr-2" /> Add Document
-                            </button>
-                        </div>
-                    </div>
-
-                    <div>
-                        <h3 className="mb-2 text-lg font-bold">Patient Documents</h3>
-                        {documents.length === 0 ? (
-                            <p className="text-gray-500">No documents added yet.</p>
-                        ) : (
-                            <div className="pr-2 max-h-96 space-y-4 overflow-y-auto">
-                                {documents.map(doc => (
-                                    <div key={doc.id} className="relative rounded-lg border border-gray-200 bg-gray-50 p-4">
-                                        <div className="mb-2 flex items-center justify-between">
-                                            <p className="flex items-center text-sm font-medium text-gray-600">
-                                                <span className="font-semibold text-blue-700 mr-1">{doc.type}</span> from {doc.date}
-                                            </p>
-                                            <button onClick={() => handleDeleteDocument(doc.id)} className="h-auto rounded-lg bg-transparent p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600">
-                                                <Trash2 />
-                                            </button>
-                                        </div>
-                                        <p className="whitespace-pre-wrap text-gray-800">{doc.content}</p>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                <div>
+                    <label for="dob" class="block text-sm font-medium text-gray-700">Date of Birth</label>
+                    <input id="dob" type="date" value="${patient ? patient.dob : ''}" required class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">
                 </div>
-            );
-        };
+                <div>
+                    <label for="diagnosis" class="block text-sm font-medium text-gray-700">Diagnosis</label>
+                    <textarea id="diagnosis" rows="3" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">${patient ? patient.diagnosis : ''}</textarea>
+                </div>
+                <div class="flex justify-end space-x-2">
+                    <button type="button" onclick="handleViewChange('list')" class="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Cancel</button>
+                    <button type="submit" class="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">${patient ? 'Update Patient' : 'Add Patient'}</button>
+                </div>
+            `;
+            formContainer.appendChild(form);
+            return formContainer;
+        }
 
-        const RootApp = () => (
-            <AppProvider>
-                <App />
-            </AppProvider>
-        );
+        // Render main content based on view state
+        function renderMainContent() {
+            if (!userId) {
+                return h('div', { className: 'flex items-center justify-center min-h-[300px] text-xl font-semibold text-red-500' }, 'Authentication failed. Please try again.');
+            }
 
-        ReactDOM.render(<RootApp />, document.getElementById('root'));
+            switch(view) {
+                case 'list':
+                    return renderPatientList();
+                case 'add':
+                    return renderPatientForm();
+                case 'edit':
+                    return renderPatientForm(selectedPatient);
+                case 'details':
+                    return renderPatientDetails(selectedPatient);
+                default:
+                    return h('div', { className: 'flex items-center justify-center min-h-[300px] text-xl font-semibold text-gray-700' }, 'Welcome to Mindful Manager.');
+            }
+        }
 
+        function renderPatientDetails(patient) {
+            const container = h('div', { className: 'rounded-xl bg-white shadow-lg p-6' });
+            container.innerHTML = `
+                <h2 class="text-2xl font-semibold">${patient.name}</h2>
+                <p class="mt-1 text-sm text-gray-500">Patient Profile</p>
+                <div class="mt-4 space-y-2">
+                    <p><strong>Date of Birth:</strong> ${patient.dob}</p>
+                    <p><strong>Diagnosis:</strong> ${patient.diagnosis}</p>
+                </div>
+                <div class="mt-6 flex space-x-2">
+                    <button onclick="handleViewChange('edit', patients.find(p => p.id === '${patient.id}'))" class="rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600">Edit Patient</button>
+                    <button onclick="handleDeletePatient('${patient.id}')" class="rounded-lg bg-red-500 px-4 py-2 text-white hover:bg-red-600">Delete Patient</button>
+                    <button onclick="handleViewChange('list')" class="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Back to List</button>
+                </div>
+            `;
+            return container;
+        }
+
+        // Full application render function
+        function render() {
+            const main = h('main', { className: 'container mx-auto max-w-5xl' });
+            main.appendChild(h('p', { className: 'text-sm text-gray-500 mb-4' }, `User ID: ${userId}`));
+            main.appendChild(renderMainContent());
+
+            const body = h('div', { className: 'min-h-screen bg-gray-50 p-4 font-sans antialiased text-gray-900' });
+            body.appendChild(renderHeader());
+            body.appendChild(main);
+
+            return body;
+        }
+
+        // Start the application after all DOM content is loaded
+        window.addEventListener('DOMContentLoaded', () => {
+            initializeFirebase();
+        });
     </script>
 </body>
 </html>
