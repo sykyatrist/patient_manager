@@ -1,0 +1,16 @@
+name: Deploy to GitHub Pageson:push:branches:- mainpermissions:contents: readpages: writeid-token: writejobs:build-and-deploy:runs-on: ubuntu-lateststeps:
+  - name: Checkout code
+    uses: actions/checkout@v4
+
+  - name: Setup Pages
+    id: pages
+    uses: actions/configure-pages@v5
+
+  - name: Upload Artifact
+    uses: actions/upload-pages-artifact@v3
+    with:
+      path: '.'
+
+  - name: Deploy to GitHub Pages
+    id: deployment
+    uses: actions/deploy-pages@v4
