@@ -8,9 +8,6 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
@@ -38,97 +35,77 @@
 
     <script type="text/babel">
         const { useState, useEffect, createContext, useContext } = React;
-        const { initializeApp } = firebase.app;
-        const { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = firebase.auth;
-        const { getFirestore, doc, collection, query, addDoc, updateDoc, deleteDoc, onSnapshot } = firebase.firestore;
-
-        // Use environment variables for Firebase configuration. DO NOT EDIT these lines.
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const __initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         const AppContext = createContext();
 
         const AppProvider = ({ children }) => {
-            const [db, setDb] = useState(null);
-            const [auth, setAuth] = useState(null);
-            const [userId, setUserId] = useState(null);
-            const [loading, setLoading] = useState(true);
-
-            useEffect(() => {
-                const initFirebase = async () => {
-                    try {
-                        const firebaseApp = firebase.initializeApp(firebaseConfig);
-                        const authInstance = firebase.auth(firebaseApp);
-                        const dbInstance = firebase.firestore(firebaseApp);
-                        setAuth(authInstance);
-                        setDb(dbInstance);
-
-                        const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
-                            if (user) {
-                                setUserId(user.uid);
-                            } else {
-                                try {
-                                    if (__initial_auth_token) {
-                                        await signInWithCustomToken(authInstance, __initial_auth_token);
-                                    } else {
-                                        await signInAnonymously(authInstance);
-                                    }
-                                } catch (error) {
-                                    console.error("Firebase auth error:", error);
-                                }
-                            }
-                            setLoading(false);
-                        });
-                        return () => unsubscribe();
-                    } catch (error) {
-                        console.error("Firebase initialization failed:", error);
-                        setLoading(false);
-                    }
-                };
-                initFirebase();
-            }, []);
+            const [loading, setLoading] = useState(false);
+            const [userId] = useState('demo-user-' + Math.random().toString(36).substr(2, 9));
 
             return (
-                <AppContext.Provider value={{ db, auth, userId, loading }}>
+                <AppContext.Provider value={{ userId, loading }}>
                     {children}
                 </AppContext.Provider>
             );
         };
 
         const App = () => {
-            const { db, userId, loading, auth } = useContext(AppContext);
+            const { userId, loading } = useContext(AppContext);
             const [patients, setPatients] = useState([]);
             const [view, setView] = useState('list');
             const [selectedPatient, setSelectedPatient] = useState(null);
-            const [doctorInfo, setDoctorInfo] = useState({ name: 'Dr. John Doe', credentials: 'M.D.', contact: '555-555-5555' });
-            const [firebaseInitError, setFirebaseInitError] = useState(false);
+            const [doctorInfo, setDoctorInfo] = useState({ 
+                name: 'Dr. John Doe', 
+                credentials: 'M.D., Psychiatrist', 
+                contact: '555-555-5555',
+                address: '123 Medical Center Dr, Suite 100'
+            });
 
             const handleViewChange = (newView, patient = null) => {
                 setView(newView);
                 setSelectedPatient(patient);
             };
 
+            // Demo data storage using state
             useEffect(() => {
-                if (!db || !userId) return;
+                const demoPatients = [
+                    {
+                        id: '1',
+                        name: 'Jane Smith',
+                        dob: '1985-03-15',
+                        diagnosis: 'Major Depressive Disorder',
+                        notes: [],
+                        medications: [],
+                        appointments: [],
+                        bills: []
+                    },
+                    {
+                        id: '2',
+                        name: 'Robert Johnson',
+                        dob: '1978-11-22',
+                        diagnosis: 'Generalized Anxiety Disorder',
+                        notes: [],
+                        medications: [],
+                        appointments: [],
+                        bills: []
+                    }
+                ];
+                setPatients(demoPatients);
+            }, []);
 
-                const patientCollectionPath = `artifacts/${appId}/users/${userId}/patients`;
-                const patientRef = collection(db, patientCollectionPath);
-                const q = query(patientRef);
-
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const patientList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setPatients(patientList);
-                }, (error) => {
-                    console.error("Error fetching patients:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId]);
+            const generateId = () => Date.now().toString() + Math.random().toString(36).substr(2, 9);
 
             const handleAddPatient = async (id, patientData) => {
                 try {
-                    const patientCollectionPath = `artifacts/${appId}/users/${userId}/patients`;
-                    await addDoc(collection(db, patientCollectionPath), patientData);
+                    const newPatient = {
+                        ...patientData,
+                        id: generateId(),
+                        notes: [],
+                        medications: [],
+                        appointments: [],
+                        bills: []
+                    };
+                    setPatients(prev => [...prev, newPatient]);
                     handleViewChange('list');
                 } catch (e) {
                     console.error("Error adding patient: ", e);
@@ -137,8 +114,9 @@
 
             const handleUpdatePatient = async (patientId, patientData) => {
                 try {
-                    const patientDocPath = `artifacts/${appId}/users/${userId}/patients/${patientId}`;
-                    await updateDoc(doc(db, patientDocPath), patientData);
+                    setPatients(prev => prev.map(p => 
+                        p.id === patientId ? { ...p, ...patientData } : p
+                    ));
                     handleViewChange('list');
                 } catch (e) {
                     console.error("Error updating patient: ", e);
@@ -147,8 +125,7 @@
 
             const handleDeletePatient = async (patientId) => {
                 try {
-                    const patientDocPath = `artifacts/${appId}/users/${userId}/patients/${patientId}`;
-                    await deleteDoc(doc(db, patientDocPath));
+                    setPatients(prev => prev.filter(p => p.id !== patientId));
                 } catch (e) {
                     console.error("Error deleting patient: ", e);
                 }
@@ -158,21 +135,14 @@
                 if (loading) {
                     return <div className="flex items-center justify-center min-h-[300px] text-xl font-semibold text-gray-700">Loading...</div>;
                 }
-                if (firebaseInitError || !db || !auth) {
-                    return <div className="flex items-center justify-center min-h-[300px] text-xl font-semibold text-red-500">
-                        Error: Firebase is not configured correctly.
-                    </div>;
-                }
-                if (!userId) {
-                    return <div className="flex items-center justify-center min-h-[300px] text-xl font-semibold text-red-500">Authentication failed. Please try again.</div>;
-                }
+                
                 switch (view) {
                     case 'list':
                         return <PatientList patients={patients} setView={handleViewChange} handleDeletePatient={handleDeletePatient} />;
                     case 'add':
                         return <PatientForm onSave={handleAddPatient} setView={handleViewChange} />;
                     case 'details':
-                        return <PatientDetails patient={selectedPatient} setView={handleViewChange} doctorInfo={doctorInfo} setDoctorInfo={setDoctorInfo} />;
+                        return <PatientDetails patient={selectedPatient} patients={patients} setPatients={setPatients} setView={handleViewChange} doctorInfo={doctorInfo} setDoctorInfo={setDoctorInfo} />;
                     case 'edit':
                         return <PatientForm patient={selectedPatient} onSave={handleUpdatePatient} setView={handleViewChange} />;
                     case 'prescriptions':
@@ -192,7 +162,7 @@
                     <header className="flex flex-col sm:flex-row justify-between items-center py-6 px-4 sm:px-8 bg-white shadow-md rounded-xl mb-6">
                         <div className="flex items-center space-x-4 mb-4 sm:mb-0">
                             <h1 className="text-3xl font-bold tracking-tight text-gray-800">Mindful Manager</h1>
-                            <p className="hidden md:block text-sm text-gray-500">Psychiatry Patient Management</p>
+                            <p className="hidden md:block text-sm text-gray-500">Psychiatry Patient Management (Demo Mode)</p>
                         </div>
                         <div className="flex items-center space-x-2">
                             <button onClick={() => { handleViewChange('list'); }} className="flex items-center px-4 py-2 bg-gray-200 text-gray-700 hover:bg-gray-300 rounded-lg shadow-sm font-medium">
@@ -204,7 +174,12 @@
                         </div>
                     </header>
                     <main className="container mx-auto max-w-5xl">
-                        <p className="text-sm text-gray-500 mb-4">User ID: <span className="font-mono text-xs bg-gray-200 rounded-md px-2 py-1 select-all">{userId}</span></p>
+                        <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                            <p className="text-sm text-yellow-800">
+                                <strong>Demo Mode:</strong> This is a demonstration version. Data is stored locally and will not persist between sessions. 
+                                AI features are disabled (would require API configuration).
+                            </p>
+                        </div>
                         {renderContent()}
                     </main>
                 </div>
@@ -323,49 +298,53 @@
             );
         };
 
-        const PatientDetails = ({ patient, setView, doctorInfo, setDoctorInfo }) => {
+        const PatientDetails = ({ patient, patients, setPatients, setView, doctorInfo, setDoctorInfo }) => {
             const [tab, setTab] = useState('notes');
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [modalContent, setModalContent] = useState({ title: '', text: '' });
             const [isLoadingModal, setIsLoadingModal] = useState(false);
-            const { db, userId } = useContext(AppContext);
+
             const userIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
             const magicSparkle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/><path d="M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg>;
+            
             const handleOpenModal = (title, text) => {
                 setModalContent({ title, text });
                 setIsModalOpen(true);
             };
+            
             const handleCloseModal = () => {
                 setIsModalOpen(false);
                 setModalContent({ title: '', text: '' });
             };
+            
             const generateReferralLetter = async () => {
                 setIsLoadingModal(true);
                 handleOpenModal("Generating Referral Letter...", "");
-                const systemPrompt = `You are a professional medical assistant drafting a referral letter for ${doctorInfo.name}. Write a concise, professional, and well-structured referral letter for a patient based on the provided clinical information. The letter should be addressed to a hypothetical colleague and include the patient's name, DOB, a brief clinical summary, and a clear reason for the referral. Do not include your own opinions or information outside of the provided context.`;
-                const userQuery = `Draft a referral letter for the following patient: Patient Name: ${patient.name} Date of Birth: ${patient.dob} Diagnosis: ${patient.diagnosis} Reason for referral: The patient requires specialized care for their diagnosis, specifically for medication management and long-term treatment.`;
-                const payload = {
-                    contents: [{ parts: [{ text: userQuery }] }],
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                };
-                const apiKey = "";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating letter. Please try again.";
-                    handleOpenModal("Generated Referral Letter", text);
-                } catch (error) {
-                    console.error("API call failed:", error);
-                    handleOpenModal("Error", "Failed to generate referral letter due to an API error.");
-                } finally {
+                
+                // Mock response for demo
+                setTimeout(() => {
+                    const mockLetter = `Dear Colleague,
+
+I am referring ${patient.name} (DOB: ${patient.dob}) for specialized psychiatric evaluation and ongoing care.
+
+CLINICAL SUMMARY:
+${patient.name} presents with ${patient.diagnosis}. Based on our clinical assessment, the patient would benefit from specialized psychiatric care including medication management and comprehensive treatment planning.
+
+REASON FOR REFERRAL:
+The patient requires specialized care for their diagnosis, specifically for medication management and long-term treatment planning. Our initial assessment suggests the need for more intensive psychiatric intervention.
+
+Please feel free to contact me at ${doctorInfo.contact} if you require any additional information.
+
+Thank you for your consideration of this patient.
+
+Sincerely,
+${doctorInfo.name}, ${doctorInfo.credentials}`;
+                    
+                    handleOpenModal("Generated Referral Letter", mockLetter);
                     setIsLoadingModal(false);
-                }
+                }, 2000);
             };
+
             return (
                 <div className="rounded-xl bg-white shadow-lg">
                     <div className="p-6">
@@ -375,24 +354,26 @@
                         <p className="mt-1 text-sm text-gray-500">
                             Patient Profile and Administrative Records
                         </p>
-                        <div className="mt-4 flex space-x-2 border-b border-gray-200">
+                        <div className="mt-4 flex flex-wrap space-x-2 border-b border-gray-200">
                             <button onClick={() => setTab('notes')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'notes' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Session Notes</button>
                             <button onClick={() => setTab('medications')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'medications' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Medications</button>
                             <button onClick={() => setTab('billing')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'billing' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Billing</button>
                             <button onClick={() => setTab('appointments')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'appointments' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Appointments</button>
                             <button onClick={() => setTab('summary')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'summary' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Case Summary</button>
                             <button onClick={() => setTab('settings')} className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 ${tab === 'settings' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Settings</button>
+                        </div>
+                        <div className="mt-4">
                             <button onClick={generateReferralLetter} disabled={isLoadingModal} className={`flex items-center rounded-lg px-4 py-2 text-sm font-medium transition-colors ${isLoadingModal ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                                {magicSparkle({})} Generate Referral ✨
+                                {magicSparkle({})} Generate Referral Letter
                             </button>
                         </div>
                     </div>
                     <div className="p-6 pt-0">
-                        {tab === 'notes' && <SessionNotesSection patient={patient} doctorInfo={doctorInfo} />}
-                        {tab === 'medications' && <MedicationSection patient={patient} setView={setView} />}
-                        {tab === 'billing' && <BillingSection patient={patient} />}
-                        {tab === 'appointments' && <AppointmentsSection patient={patient} />}
-                        {tab === 'summary' && <CaseSummarySection patient={patient} />}
+                        {tab === 'notes' && <SessionNotesSection patient={patient} patients={patients} setPatients={setPatients} doctorInfo={doctorInfo} />}
+                        {tab === 'medications' && <MedicationSection patient={patient} patients={patients} setPatients={setPatients} setView={setView} />}
+                        {tab === 'billing' && <BillingSection patient={patient} patients={patients} setPatients={setPatients} />}
+                        {tab === 'appointments' && <AppointmentsSection patient={patient} patients={patients} setPatients={setPatients} />}
+                        {tab === 'summary' && <CaseSummarySection patient={patient} patients={patients} setPatients={setPatients} />}
                         {tab === 'settings' && <SettingsForm doctorInfo={doctorInfo} setDoctorInfo={setDoctorInfo} />}
                     </div>
                     <div className="p-6">
@@ -420,7 +401,7 @@
             };
             return (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 p-4">
-                    <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-lg">
+                    <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-lg max-h-[80vh] overflow-y-auto">
                         <h3 className="mb-2 text-xl font-semibold">{title}</h3>
                         <div className="mb-4 max-h-96 overflow-y-auto">
                             {isLoading ? (
@@ -431,89 +412,99 @@
                         </div>
                         <div className="flex justify-end space-x-2">
                             <button onClick={onClose} className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300">Close</button>
-                            <button onClick={copyToClipboard} className="rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700">{copyStatus}</button>
+                            {!isLoading && text && (
+                                <button onClick={copyToClipboard} className="rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700">{copyStatus}</button>
+                            )}
                         </div>
                     </div>
                 </div>
             );
         };
 
-        const SessionNotesSection = ({ patient, doctorInfo }) => {
-            const { db, userId } = useContext(AppContext);
-            const [notes, setNotes] = useState([]);
+        const SessionNotesSection = ({ patient, patients, setPatients, doctorInfo }) => {
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [modalContent, setModalContent] = useState({ title: '', text: '' });
             const [isLoadingModal, setIsLoadingModal] = useState(false);
+
             const handleOpenModal = (title, text) => {
                 setModalContent({ title, text });
                 setIsModalOpen(true);
             };
+            
             const handleCloseModal = () => {
                 setIsModalOpen(false);
                 setModalContent({ title: '', text: '' });
             };
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-                const notesCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sessions`;
-                const notesRef = collection(db, notesCollectionPath);
-                const q = query(notesRef);
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const notesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setNotes(notesList.sort((a, b) => new Date(b.timestamp.toDate()) - new Date(a.timestamp.toDate())));
-                }, (error) => {
-                    console.error("Error fetching notes:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
 
-            const handleAddNote = async (noteText) => {
-                try {
-                    const notesCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sessions`;
-                    await addDoc(collection(db, notesCollectionPath), {
-                        note: noteText,
-                        date: new Date().toISOString().slice(0, 10),
-                        timestamp: new Date(),
-                    });
-                } catch (e) {
-                    console.error("Error adding note: ", e);
-                }
+            const handleAddNote = (noteText) => {
+                const newNote = {
+                    id: Date.now().toString(),
+                    note: noteText,
+                    date: new Date().toISOString().slice(0, 10),
+                    timestamp: new Date(),
+                };
+                
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, notes: [...(p.notes || []), newNote] }
+                        : p
+                ));
             };
-            const handleDeleteNote = async (noteId) => {
-                try {
-                    const noteDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sessions/${noteId}`;
-                    await deleteDoc(doc(db, noteDocPath));
-                } catch (e) {
-                    console.error("Error deleting note: ", e);
-                }
+
+            const handleDeleteNote = (noteId) => {
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, notes: (p.notes || []).filter(n => n.id !== noteId) }
+                        : p
+                ));
             };
-            const generateTreatmentPlan = async () => {
+
+            const generateTreatmentPlan = () => {
                 setIsLoadingModal(true);
                 handleOpenModal("Generating Treatment Plan...", "");
-                const allNotes = notes.map(note => `[Note from ${note.date}]\n${note.note}`).join("\n\n");
-                const systemPrompt = `You are an expert mental health professional, Dr. ${doctorInfo.name}. Based on the provided patient diagnosis and session notes, generate a well-structured and comprehensive treatment plan. The plan should include long-term and short-term goals, recommended interventions, and potential follow-up actions. Ensure the tone is clinical and professional. Do not include your own opinions or information outside of the provided context.`;
-                const userQuery = `Generate a treatment plan for a patient named ${patient.name} with the diagnosis of ${patient.diagnosis}. Here are the session notes to inform the plan:\n\n${allNotes}`;
-                const payload = {
-                    contents: [{ parts: [{ text: userQuery }] }],
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                };
-                const apiKey = "";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating plan. Please try again.";
-                    handleOpenModal("Generated Treatment Plan", text);
-                } catch (error) {
-                    console.error("API call failed:", error);
-                    handleOpenModal("Error", "Failed to generate treatment plan due to an API error.");
-                } finally {
+                
+                // Mock response for demo
+                setTimeout(() => {
+                    const mockPlan = `TREATMENT PLAN FOR ${patient.name}
+
+DIAGNOSIS: ${patient.diagnosis}
+
+SHORT-TERM GOALS (1-3 months):
+1. Establish therapeutic rapport and treatment alliance
+2. Conduct comprehensive psychiatric evaluation
+3. Initiate appropriate medication management if indicated
+4. Develop coping strategies for immediate symptom relief
+
+LONG-TERM GOALS (6-12 months):
+1. Achieve significant symptom reduction
+2. Improve overall functioning and quality of life
+3. Develop robust coping mechanisms and relapse prevention strategies
+4. Enhance social support network and interpersonal relationships
+
+RECOMMENDED INTERVENTIONS:
+- Regular psychiatric sessions (weekly initially, then bi-weekly)
+- Medication evaluation and management
+- Psychoeducation about condition and treatment
+- Cognitive-behavioral therapy techniques
+- Stress management and relaxation training
+
+FOLLOW-UP ACTIONS:
+- Schedule regular medication reviews
+- Monitor treatment response and side effects
+- Coordinate with other healthcare providers as needed
+- Consider adjunct therapies (group therapy, family therapy)
+
+This treatment plan should be reviewed and updated regularly based on patient response and clinical progress.
+
+Generated by: ${doctorInfo.name}, ${doctorInfo.credentials}
+Date: ${new Date().toLocaleDateString()}`;
+
+                    handleOpenModal("Generated Treatment Plan", mockPlan);
                     setIsLoadingModal(false);
-                }
+                }, 2000);
             };
+
+            const notes = patient.notes || [];
 
             return (
                 <div className="space-y-6">
@@ -578,47 +569,44 @@
             );
         };
 
-        const MedicationSection = ({ patient, setView }) => {
-            const { db, userId } = useContext(AppContext);
-            const [medications, setMedications] = useState([]);
+        const MedicationSection = ({ patient, patients, setPatients, setView }) => {
             const [newMedication, setNewMedication] = useState({ name: '', dosage: '', frequency: '' });
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-                const medCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/medications`;
-                const medRef = collection(db, medCollectionPath);
-                const q = query(medRef);
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const medList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setMedications(medList);
-                }, (error) => {
-                    console.error("Error fetching medications:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddMedication = async (e) => {
+            
+            const handleAddMedication = (e) => {
                 e.preventDefault();
                 if (!newMedication.name) return;
-                try {
-                    const medCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/medications`;
-                    await addDoc(collection(db, medCollectionPath), { ...newMedication, timestamp: new Date() });
-                    setNewMedication({ name: '', dosage: '', frequency: '' });
-                } catch (e) {
-                    console.error("Error adding medication: ", e);
-                }
+                
+                const medication = {
+                    id: Date.now().toString(),
+                    ...newMedication,
+                    timestamp: new Date()
+                };
+                
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, medications: [...(p.medications || []), medication] }
+                        : p
+                ));
+                
+                setNewMedication({ name: '', dosage: '', frequency: '' });
             };
-            const handleDeleteMedication = async (medId) => {
-                try {
-                    const medDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/medications/${medId}`;
-                    await deleteDoc(doc(db, medDocPath));
-                } catch (e) {
-                    console.error("Error deleting medication: ", e);
-                }
+            
+            const handleDeleteMedication = (medId) => {
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, medications: (p.medications || []).filter(m => m.id !== medId) }
+                        : p
+                ));
             };
+            
             const handleGeneratePrescription = () => {
                 setView('prescriptions');
             };
+            
             const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
+            
+            const medications = patient.medications || [];
+            
             return (
                 <div className="space-y-6">
                     <div className="rounded-lg bg-gray-50 p-6 shadow-sm">
@@ -665,16 +653,20 @@
                 refills: '',
                 instructions: '',
             });
+            
             const handleChange = (e) => {
                 const { name, value } = e.target;
                 setPrescriptionData({ ...prescriptionData, [name]: value });
             };
+            
             const handlePrint = () => {
                 window.print();
             };
+            
             const handleGoBack = () => {
-                setView('medications');
+                setView('details');
             };
+            
             return (
                 <div className="rounded-xl bg-white shadow-lg p-6">
                     <div className="flex justify-between items-center mb-4">
@@ -694,6 +686,7 @@
                                 <h1 className="text-xl font-bold">{doctorInfo.name}</h1>
                                 <p className="text-sm">{doctorInfo.credentials}</p>
                                 <p className="text-sm text-gray-600">{doctorInfo.contact}</p>
+                                <p className="text-sm text-gray-600">{doctorInfo.address}</p>
                             </div>
                             <p className="text-sm text-gray-500">Date: {new Date().toLocaleDateString()}</p>
                         </div>
@@ -738,44 +731,39 @@
             );
         };
 
-        const BillingSection = ({ patient }) => {
-            const { db, userId } = useContext(AppContext);
-            const [bills, setBills] = useState([]);
+        const BillingSection = ({ patient, patients, setPatients }) => {
             const [newBill, setNewBill] = useState({ date: new Date().toISOString().slice(0, 10), service: '', amount: '' });
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-                const billsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/billing`;
-                const billsRef = collection(db, billsCollectionPath);
-                const q = query(billsRef);
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const billList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setBills(billList.sort((a, b) => new Date(b.date) - new Date(a.date)));
-                }, (error) => {
-                    console.error("Error fetching billing data:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddBill = async (e) => {
+            
+            const handleAddBill = (e) => {
                 e.preventDefault();
                 if (!newBill.service || !newBill.amount) return;
-                try {
-                    const billsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/billing`;
-                    await addDoc(collection(db, billsCollectionPath), newBill);
-                    setNewBill({ date: new Date().toISOString().slice(0, 10), service: '', amount: '' });
-                } catch (e) {
-                    console.error("Error adding bill: ", e);
-                }
+                
+                const bill = {
+                    id: Date.now().toString(),
+                    ...newBill
+                };
+                
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, bills: [...(p.bills || []), bill] }
+                        : p
+                ));
+                
+                setNewBill({ date: new Date().toISOString().slice(0, 10), service: '', amount: '' });
             };
-            const handleDeleteBill = async (billId) => {
-                try {
-                    const billDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/billing/${billId}`;
-                    await deleteDoc(doc(db, billDocPath));
-                } catch (e) {
-                    console.error("Error deleting bill: ", e);
-                }
+            
+            const handleDeleteBill = (billId) => {
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, bills: (p.bills || []).filter(b => b.id !== billId) }
+                        : p
+                ));
             };
+            
             const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
+            
+            const bills = (patient.bills || []).sort((a, b) => new Date(b.date) - new Date(a.date));
+            
             return (
                 <div className="space-y-6">
                     <div className="rounded-lg bg-gray-50 p-6 shadow-sm">
@@ -811,44 +799,39 @@
             );
         };
 
-        const AppointmentsSection = ({ patient }) => {
-            const { db, userId } = useContext(AppContext);
-            const [appointments, setAppointments] = useState([]);
+        const AppointmentsSection = ({ patient, patients, setPatients }) => {
             const [newAppointment, setNewAppointment] = useState({ date: new Date().toISOString().slice(0, 10), time: '', description: '' });
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-                const apptsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/appointments`;
-                const apptsRef = collection(db, apptsCollectionPath);
-                const q = query(apptsRef);
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const apptList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setAppointments(apptList.sort((a, b) => new Date(b.date) - new Date(a.date)));
-                }, (error) => {
-                    console.error("Error fetching appointments:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddAppointment = async (e) => {
+            
+            const handleAddAppointment = (e) => {
                 e.preventDefault();
                 if (!newAppointment.date || !newAppointment.time) return;
-                try {
-                    const apptsCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/appointments`;
-                    await addDoc(collection(db, apptsCollectionPath), newAppointment);
-                    setNewAppointment({ date: new Date().toISOString().slice(0, 10), time: '', description: '' });
-                } catch (e) {
-                    console.error("Error adding appointment: ", e);
-                }
+                
+                const appointment = {
+                    id: Date.now().toString(),
+                    ...newAppointment
+                };
+                
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, appointments: [...(p.appointments || []), appointment] }
+                        : p
+                ));
+                
+                setNewAppointment({ date: new Date().toISOString().slice(0, 10), time: '', description: '' });
             };
-            const handleDeleteAppointment = async (apptId) => {
-                try {
-                    const apptDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/appointments/${apptId}`;
-                    await deleteDoc(doc(db, apptDocPath));
-                } catch (e) {
-                    console.error("Error deleting appointment: ", e);
-                }
+            
+            const handleDeleteAppointment = (apptId) => {
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, appointments: (p.appointments || []).filter(a => a.id !== apptId) }
+                        : p
+                ));
             };
+            
             const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
+            
+            const appointments = (patient.appointments || []).sort((a, b) => new Date(b.date) - new Date(a.date));
+            
             return (
                 <div className="space-y-6">
                     <div className="rounded-lg bg-gray-50 p-6 shadow-sm">
@@ -884,73 +867,57 @@
             );
         };
 
-        const CaseSummarySection = ({ patient }) => {
-            const { db, userId } = useContext(AppContext);
-            const [sources, setSources] = useState([]);
+        const CaseSummarySection = ({ patient, patients, setPatients }) => {
             const [newSource, setNewSource] = useState('');
             const [summary, setSummary] = useState('');
             const [isLoading, setIsLoading] = useState(false);
-            useEffect(() => {
-                if (!db || !userId || !patient) return;
-                const sourcesCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sources`;
-                const sourcesRef = collection(db, sourcesCollectionPath);
-                const q = query(sourcesRef);
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const sourcesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setSources(sourcesList);
-                }, (error) => {
-                    console.error("Error fetching sources:", error);
-                });
-                return () => unsubscribe();
-            }, [db, userId, patient]);
-
-            const handleAddSource = async () => {
+            
+            const handleAddSource = () => {
                 if (!newSource.trim()) return;
-                try {
-                    const sourcesCollectionPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sources`;
-                    await addDoc(collection(db, sourcesCollectionPath), { content: newSource, timestamp: new Date() });
-                    setNewSource('');
-                } catch (e) {
-                    console.error("Error adding source: ", e);
-                }
+                
+                const source = {
+                    id: Date.now().toString(),
+                    content: newSource,
+                    timestamp: new Date()
+                };
+                
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, sources: [...(p.sources || []), source] }
+                        : p
+                ));
+                
+                setNewSource('');
             };
-            const handleDeleteSource = async (sourceId) => {
-                try {
-                    const sourceDocPath = `artifacts/${appId}/users/${userId}/patients/${patient.id}/sources/${sourceId}`;
-                    await deleteDoc(doc(db, sourceDocPath));
-                } catch (e) {
-                    console.error("Error deleting source: ", e);
-                }
+            
+            const handleDeleteSource = (sourceId) => {
+                setPatients(prev => prev.map(p => 
+                    p.id === patient.id 
+                        ? { ...p, sources: (p.sources || []).filter(s => s.id !== sourceId) }
+                        : p
+                ));
             };
-            const generateSummary = async () => {
+            
+            const generateSummary = () => {
                 setIsLoading(true);
                 setSummary('Generating summary...');
-                const allSources = sources.map(s => s.content).join("\n\n");
-                const systemPrompt = "You are a professional medical assistant. Generate a concise, single-paragraph summary of a patient's case based on the provided text sources (e.g., notes, lab results, emails, letters). Focus on key clinical details, diagnosis, and treatment history. Do not include opinions or information outside of the provided context.";
-                const userQuery = `Summarize the following information for a patient named ${patient.name} with the diagnosis of ${patient.diagnosis}:\n\n${allSources}`;
-                const payload = {
-                    contents: [{ parts: [{ text: userQuery }] }],
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                };
-                const apiKey = "";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Error generating summary. Please try again.";
-                    setSummary(text);
-                } catch (error) {
-                    console.error("API call failed:", error);
-                    setSummary("Failed to generate summary due to an API error.");
-                } finally {
+                
+                // Mock response for demo
+                setTimeout(() => {
+                    const sources = patient.sources || [];
+                    const mockSummary = sources.length > 0 
+                        ? `Patient ${patient.name} (DOB: ${patient.dob}) presents with ${patient.diagnosis}. Based on the available documentation and clinical sources, the patient has been receiving ongoing psychiatric care. The case demonstrates the typical progression and management challenges associated with this condition. Current treatment approach appears appropriate with regular monitoring and adjustment of therapeutic interventions as needed. Continued follow-up and documentation of progress remains essential for optimal patient outcomes.`
+                        : `Patient ${patient.name} (DOB: ${patient.dob}) with diagnosis of ${patient.diagnosis}. Limited source documentation available at this time. Recommend adding clinical notes, correspondence, or other relevant materials to generate a more comprehensive case summary.`;
+                    
+                    setSummary(mockSummary);
                     setIsLoading(false);
-                }
+                }, 2000);
             };
+            
             const Trash2 = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>;
+            
+            const sources = patient.sources || [];
+            
             return (
                 <div className="space-y-6">
                     <div className="rounded-lg bg-gray-50 p-6 shadow-sm">
@@ -978,14 +945,18 @@
                         <div className="mt-6">
                             <h4 className="text-md font-medium text-gray-600 mb-2">Source Materials:</h4>
                             <ul className="space-y-2">
-                                {sources.map(source => (
-                                    <li key={source.id} className="flex justify-between items-start rounded-lg bg-gray-50 p-3 shadow-sm">
-                                        <p className="text-sm text-gray-800">{source.content.substring(0, 100)}...</p>
-                                        <button onClick={() => handleDeleteSource(source.id)} className="p-1 rounded-lg hover:bg-gray-100">
-                                            <Trash2 />
-                                        </button>
-                                    </li>
-                                ))}
+                                {sources.length === 0 ? (
+                                    <p className="text-sm text-gray-500">No source materials added yet.</p>
+                                ) : (
+                                    sources.map(source => (
+                                        <li key={source.id} className="flex justify-between items-start rounded-lg bg-gray-50 p-3 shadow-sm">
+                                            <p className="text-sm text-gray-800">{source.content.substring(0, 100)}...</p>
+                                            <button onClick={() => handleDeleteSource(source.id)} className="p-1 rounded-lg hover:bg-gray-100">
+                                                <Trash2 />
+                                            </button>
+                                        </li>
+                                    ))
+                                )}
                             </ul>
                         </div>
                     </div>
@@ -998,10 +969,14 @@
                 const { id, value } = e.target;
                 setDoctorInfo({ ...doctorInfo, [id]: value });
             };
+            
             const handleSubmit = (e) => {
                 e.preventDefault();
-                setView('details');
+                if (setView) {
+                    setView('details');
+                }
             };
+            
             return (
                 <div className="rounded-xl bg-white shadow-lg">
                     <div className="p-6">
@@ -1023,6 +998,10 @@
                             <div>
                                 <label htmlFor="contact" className="mb-1 block text-sm font-medium text-gray-700">Contact Information</label>
                                 <input id="contact" type="text" value={doctorInfo.contact} onChange={handleChange} required className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
+                            </div>
+                            <div>
+                                <label htmlFor="address" className="mb-1 block text-sm font-medium text-gray-700">Address</label>
+                                <input id="address" type="text" value={doctorInfo.address} onChange={handleChange} className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50" />
                             </div>
                         </div>
                         <div className="flex justify-end p-6">
